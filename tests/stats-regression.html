@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tests Muscu Coach Pro</title>
+<style>
+  body { margin: 0; padding: 24px; background: #071522; color: #F4F8FC; font: 14px system-ui, sans-serif; }
+  h1 { font-size: 20px; }
+  li { margin: 8px 0; }
+  .ok { color: #27D89B; }
+  .fail { color: #FF9DAA; }
+  iframe { position: absolute; width: 1px; height: 1px; border: 0; opacity: 0; }
+</style>
+</head>
+<body>
+<h1>Tests de non-régression</h1>
+<ul id="results"></ul>
+<iframe id="app" src="../index.html?tests=1"></iframe>
+<script>
+(async () => {
+  const results = document.querySelector('#results');
+  const report = (name, ok, detail = '') => {
+    const item = document.createElement('li');
+    item.className = ok ? 'ok' : 'fail';
+    item.textContent = `${ok ? 'OK' : 'ÉCHEC'} · ${name}${detail ? ` — ${detail}` : ''}`;
+    results.appendChild(item);
+    if (!ok) throw new Error(name);
+  };
+  const frame = document.querySelector('#app');
+  await new Promise(resolve => frame.addEventListener('load', resolve, { once: true }));
+  await new Promise(resolve => setTimeout(resolve, 900));
+  const app = frame.contentWindow;
+  report('validateur disponible', typeof app.validateImportBundle === 'function');
+  const stored = await app.storage.get('custom-program');
+  const snapshot = stored?.value ? JSON.parse(stored.value) : null;
+  if (!snapshot) {
+    report('programme de test disponible', false, 'génère un programme avant de lancer les tests');
+    return;
+  }
+  const base = { app: 'Muscu Coach Pro', version: 18, customProgram: snapshot, sessions: {}, trainingLog: [], bodyweightLog: [], calorieLog: [], freestyleLog: [], cycleFeedback: [] };
+  report('sauvegarde valide acceptée', app.validateImportBundle(base).ok);
+  report('version future refusée', !app.validateImportBundle({ ...base, version: 999 }).ok);
+  report('liste invalide refusée', !app.validateImportBundle({ ...base, trainingLog: {} }).ok);
+  const statsButton = [...app.document.querySelectorAll('button')].find(button => button.textContent.includes('Stats'));
+  report('accès aux statistiques', !!statsButton);
+  statsButton?.click();
+  await new Promise(resolve => setTimeout(resolve, 900));
+  report('libellé des volumes explicite', app.document.body.textContent.includes('Volume attribué par groupe musculaire'));
+})();
+</script>
+</body>
+</html>

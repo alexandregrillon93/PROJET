@@ -11,9 +11,10 @@
 <link rel="icon" href="./icon-192.png">
 <title>Muscu Coach Pro — Coach intelligent</title>
 
-<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-<script src="https://cdn.tailwindcss.com"></script>
+<script src="./vendor/react.production.min.js"></script>
+<script src="./vendor/react-dom.production.min.js"></script>
+<script src="./vendor/tailwindcss.js"></script>
+<script src="./modules/data-validation.js"></script>
 <style>
   html, body { margin: 0; padding: 0; background: #181B18; }
   #root { min-height: 100vh; }
@@ -2789,6 +2790,23 @@ function ProgramBuilder() {
         if (ok)
             await restart();
     }
+    async function resetStatistics() {
+        const ok = window.confirm("Effacer toutes les séances et statistiques ? Le programme, le profil, les pesées et la nutrition seront conservés.");
+        if (!ok || !window.storage) return;
+        try {
+            const keys = await window.storage.list("custom-session:");
+            for (const key of (keys?.keys || [])) await window.storage.delete(key);
+            await Promise.all(["training-log", "stats-session-log", "freestyle-log"].map(key => window.storage.set(key, "[]", false)));
+            setTrainingLog([]);
+            setDashboardData(null);
+            setImportFlash("Statistiques et séances effacées. Le programme est conservé.");
+            setTimeout(() => setImportFlash(null), 3000);
+            if (mode === "dashboard") await openDashboard();
+        } catch (e) {
+            setImportFlash("Impossible d'effacer les statistiques.");
+            setTimeout(() => setImportFlash(null), 3000);
+        }
+    }
     async function optimizeCurrentProgram() {
         if (!program)
             return;
@@ -3203,6 +3221,7 @@ function ProgramBuilder() {
                 const exists = mergedLog.some(e => `${e.date}|${e.dayIndex}|${e.session?.date || ""}` === key);
                 if (!exists) mergedLog.push(item);
             });
+            setTrainingLog(mergedLog);
             const completedEntries = mergedLog.filter(e => e?.status === "completed");
 
             const idToInfo = {};
@@ -3474,7 +3493,7 @@ function ProgramBuilder() {
             catch (e) {
                 return fallback;
             } };
-            const bundle = { app: "Muscu Coach Pro", version: 17, exportedAt: new Date().toISOString(), customProgram: await readJson("custom-program", null), sessions: {}, trainingLog: await readJson("training-log", []), bodyweightLog: await readJson("bodyweight-log", []), calorieLog: await readJson("calorie-log", []), freestyleLog: await readJson("freestyle-log", []), cycleFeedback: await readJson("cycle-feedback", []), nutritionProfile: await readJson("nutrition-profile", null), recoveryToday: await readJson("recovery-today", null), mealVariants: await readJson("meal-variants", {}) };
+            const bundle = { app: "Muscu Coach Pro", version: APP_DATA_VERSION, exportedAt: new Date().toISOString(), customProgram: await readJson("custom-program", null), sessions: {}, trainingLog: await readJson("training-log", []), bodyweightLog: await readJson("bodyweight-log", []), calorieLog: await readJson("calorie-log", []), freestyleLog: await readJson("freestyle-log", []), cycleFeedback: await readJson("cycle-feedback", []), nutritionProfile: await readJson("nutrition-profile", null), recoveryToday: await readJson("recovery-today", null), mealVariants: await readJson("meal-variants", {}) };
             const count = bundle.customProgram?.program?.length || program?.length || 0;
             for (let i = 0; i < count; i++)
                 bundle.sessions[i] = await readJson(`custom-session:${i}`, null);
@@ -3499,8 +3518,8 @@ function ProgramBuilder() {
             return;
         try {
             const bundle = JSON.parse(await file.text());
-            if (!bundle?.customProgram?.program || !bundle.customProgram.answers)
-                throw new Error("invalid");
+            const validation = validateImportBundle(bundle);
+            if (!validation.ok) throw new Error(validation.message);
             const writeJson = async (key, value) => window.storage.set(key, JSON.stringify(value), false);
             await writeJson("custom-program", bundle.customProgram);
             await writeJson("training-log", bundle.trainingLog || []);
@@ -3526,7 +3545,7 @@ function ProgramBuilder() {
             setTimeout(() => setImportFlash(null), 2500);
         }
         catch (e) {
-            setImportFlash("Fichier de sauvegarde invalide.");
+            setImportFlash(e?.message || "Fichier de sauvegarde invalide.");
             setTimeout(() => setImportFlash(null), 2500);
         }
     }
@@ -4839,7 +4858,8 @@ function ProgramBuilder() {
                     React.createElement("div", { style: { fontSize: 11, color: colors.muted } }, "Le renforcement est affiché séparément : il ne pollue pas les statistiques des groupes musculaires principaux." )
                 ),
                 React.createElement("div", { style: { background: colors.surface, border: `1px solid ${colors.border}` }, className: "rounded-lg p-4" },
-                    React.createElement("div", { style: { fontFamily: displayFont, fontSize: 12, color: colors.faint, letterSpacing: "0.03em" }, className: "uppercase mb-3" }, "Volume par groupe musculaire (cette semaine)"),
+                    React.createElement("div", { style: { fontFamily: displayFont, fontSize: 12, color: colors.faint, letterSpacing: "0.03em" }, className: "uppercase mb-1" }, "Volume attribué par groupe musculaire (cette semaine)"),
+                    React.createElement("div", { style: { fontSize: 10, color: colors.faint, marginBottom: 10 } }, "Un exercice composé peut être attribué à plusieurs groupes : la somme de cette carte peut donc dépasser le volume total."),
                     (!dashboardData?.volumeByCategory || dashboardData.volumeByCategory.length === 0) && (React.createElement("div", { style: { color: colors.faint, fontSize: 12 } }, "Rien de logg\u00E9 cette semaine pour l'instant.")),
                     React.createElement("div", { className: "flex flex-col gap-1.5" }, dashboardData?.volumeByCategory?.map((v) => {
                         const catColor = CATEGORY_COLORS[v.category] || colors.accent;
@@ -5250,6 +5270,10 @@ function ProgramBuilder() {
                 React.createElement("div", { className: "mc-section-title" }, "\uD83D\uDD04 Nouveau cycle"),
                 React.createElement("div", { className: "mc-v12-muted mt-1" }, "Repars en semaine 1 avec un nouveau programme. Ton historique global reste conserv\u00E9."),
                 React.createElement("button", { onClick: confirmRestart, className: "mc-v12-btn mt-3", style: { background: '#3A1620', color: '#FF9DAA', border: '1px solid #7A3040', fontWeight: 800 } }, "\u21BB RECOMMENCER LE PROGRAMME \u00C0 Z\u00C9RO")),
+            React.createElement("div", { className: "mc-v12-card", style: { borderColor: '#7A3040' } },
+                React.createElement("div", { className: "mc-section-title" }, "\uD83D\uDCCA R\u00E9initialiser les statistiques"),
+                React.createElement("div", { className: "mc-v12-muted mt-1" }, "Efface les s\u00E9ances et statistiques sans supprimer ton programme, ton profil, tes pes\u00E9es ou ta nutrition."),
+                React.createElement("button", { onClick: resetStatistics, className: "mc-v12-btn mt-3", style: { color: '#FF9DAA', borderColor: '#7A3040' } }, "EFFACER LES S\u00C9ANCES ET STATISTIQUES")),
             React.createElement("div", { className: "mc-v12-card" },
                 React.createElement("div", { className: "mc-section-title" }, "\u2699\uFE0F Pr\u00E9f\u00E9rences"),
                 React.createElement("div", { className: "flex items-center justify-between py-3" },
