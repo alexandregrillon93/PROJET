@@ -776,9 +776,9 @@ const ADAPTIVE_SPLITS = {
             { title: "Full Body B — Confirmé", slots: [["Pectoraux", 1], ["Dos", 1], ["Épaules", 1], ["Triceps", 1], ["Biceps", 1], ["Mollets", 1]] },
         ],
         4: [
-            { title: "Upper A — Confirmé", slots: [["Pectoraux", 2], ["Dos", 1], ["Épaules", 1], ["Biceps", 1], ["Triceps", 1]] },
+            { title: "Upper A — Confirmé", slots: [["Pectoraux", 2], ["Dos", 1], ["Épaules", 1], ["Biceps", 1], ["Triceps", 1], ["Trapèzes", 1]] },
             { title: "Lower A — Confirmé", slots: [["Jambes", 1], ["Ischios/Fessiers", 1], ["Mollets", 1], ["Core", 1]] },
-            { title: "Upper B — Confirmé", slots: [["Dos", 1], ["Pectoraux", 1], ["Épaules", 2], ["Biceps", 1], ["Triceps", 1]] },
+            { title: "Upper B — Confirmé", slots: [["Dos", 1], ["Pectoraux", 1], ["Épaules", 2], ["Biceps", 1], ["Triceps", 1], ["Trapèzes", 1]] },
             { title: "Lower B — Confirmé", slots: [["Ischios/Fessiers", 1], ["Jambes", 1], ["Mollets", 1], ["Core", 1]] },
         ],
         5: [
@@ -1501,6 +1501,36 @@ function getExerciseSetCount(group, level, goal, days, recovery) {
     const occurrences = Math.max(1, Math.round(days / 2));
     return Math.max(1, Math.round((target || 4) / occurrences));
 }
+function ensureTrapeziusExercises(program, answers = {}) {
+    if (!program?.length) return program;
+    const limitations = (answers.limitations || []).filter((l) => l !== "aucune");
+    const scheme = GOAL_SCHEMES[answers.goal] || GOAL_SCHEMES.recomposition;
+    const trainingDays = Number(answers.days) || program.length;
+    const directDays = trainingDays >= 4 ? 2 : 1;
+    const eligibleDays = program.map((day, index) => {
+        const title = day.title || "";
+        const hasUpperStructure = /Upper|Haut|Pull|Push|Full Body|Dos/i.test(title);
+        const hasBackWork = day.exercises.some((ex) => ex.category === "Dos");
+        const priority = /Upper|Haut|Pull/i.test(title) ? 0 : /Full Body|Push|Dos/i.test(title) ? 1 : 2;
+        return { day, index, priority, eligible: hasUpperStructure || hasBackWork };
+    }).filter((entry) => entry.eligible && !entry.day.exercises.some((ex) => ex.category === "Trapèzes"))
+        .sort((a, b) => a.priority - b.priority || a.index - b.index)
+        .slice(0, directDays);
+    const selectedDays = new Set(eligibleDays.map((entry) => entry.index));
+    return program.map((day, dayIndex) => {
+        if (!selectedDays.has(dayIndex)) return day;
+        const candidate = filterPool("Trapèzes", answers.equip, limitations, answers.level || "intermediaire").find((ex) => !day.exercises.some((current) => current.name === ex.name));
+        if (!candidate) return day;
+        const exercise = {
+            ...withId(candidate),
+            category: "Trapèzes",
+            target: `${getExerciseSetCount("Trapèzes", answers.level, answers.goal, trainingDays, answers.recovery)}x${candidate.isTime ? "30-45" : scheme.reps}`,
+            rest: scheme.rest,
+            portion: candidate.portion || classifyPortion("Trapèzes", candidate.subgroup || "", candidate.name || ""),
+        };
+        return { ...day, exercises: [...day.exercises, exercise] };
+    });
+}
 function buildSupersetGroups(exercises, trainingStyle) {
     if (trainingStyle !== "biset" && trainingStyle !== "superset") return [];
     const requestedSize = trainingStyle === "biset" ? 2 : 3;
@@ -1704,9 +1734,9 @@ function generateProgram(answers) {
     // total d'un muscle.
     const fitted = fitProgramToDuration(repaired, answers);
     const rebalanced = rebalanceWeeklyVolume(fitted, answers);
-    return repairPortionCoverage(rebalanced, answers).map(day => ({
+    return ensureTrapeziusExercises(repairPortionCoverage(rebalanced, answers), answers).map((day, dayIndex) => ({
         ...day,
-        supersets: buildSupersetGroups(day.exercises, answers.training_style),
+        supersets: dayIndex === 0 ? [] : buildSupersetGroups(day.exercises, answers.training_style),
     }));
 }
 function fitProgramToDuration(program, answers = {}) {
@@ -1819,7 +1849,7 @@ function getSwapAlternatives(program, answers, dayIndex, exIndex) {
     const rest = candidates.filter((e) => normalizeSubgroup(e.subgroup) !== currentNorm);
     return [...sameSubgroup, ...rest];
 }
-function applySwapChoice(program, dayIndex, exIndex, chosen) {
+function applySwapChoice(program, answers, dayIndex, exIndex, chosen) {
     const day = program[dayIndex];
     const current = day.exercises[exIndex];
     return program.map((d, di) => {
@@ -2664,7 +2694,7 @@ function StatsHistoryCard({ data, colors, displayFont, dataFont }) {
 }
 function ProgramBuilder() {
     const [stepIndex, setStepIndex] = useState(0);
-    const [answers, setAnswers] = useState({});
+    const [answers, setAnswers] = useState({ days: 4 });
     const [program, setProgram] = useState(null);
     const [coachUsedForCurrentProgram, setCoachUsedForCurrentProgram] = useState(false);
     const [savedFlash, setSavedFlash] = useState(false);
@@ -2917,8 +2947,10 @@ function ProgramBuilder() {
                 if (result?.value) {
                     const parsed = JSON.parse(result.value);
                     if (parsed.program && parsed.answers) {
-                        await window.storage.set("custom-program", JSON.stringify(parsed), false);
-                        setProgram(parsed.program);
+                        const restoredProgram = ensureTrapeziusExercises(parsed.program, parsed.answers).map((day, dayIndex) => dayIndex === 0 ? { ...day, supersets: [] } : day);
+                        const restoredSnapshot = { ...parsed, program: restoredProgram };
+                        await window.storage.set("custom-program", JSON.stringify(restoredSnapshot), false);
+                        setProgram(restoredProgram);
                         setAnswers(parsed.answers);
                         setProgramStartDate(parsed.date || null);
                         setMode("home");
@@ -3628,7 +3660,7 @@ function ProgramBuilder() {
     }
     function chooseSwap(dayIndex, exIndex, chosen) {
         setProgram((prev) => {
-            const next = applySwapChoice(prev, dayIndex, exIndex, chosen);
+            const next = applySwapChoice(prev, answers, dayIndex, exIndex, chosen);
             persistProgramSnapshot(next);
             return next;
         });
@@ -3875,7 +3907,22 @@ function ProgramBuilder() {
                 if (cancelled)
                     return;
                 if (result && result.value) {
-                    setDayData(JSON.parse(result.value));
+                    const savedData = JSON.parse(result.value);
+                    const usableHistory = (savedData.history || []).filter(session => Object.values(session.exercises || {}).some(sets => (sets || []).some(set => Number(set?.reps) > 0 && (Number(set?.weight) > 0 || set?.reps))));
+                    const seenDates = new Set();
+                    const history = usableHistory.slice().reverse().filter(session => {
+                        const dateKey = session.date ? new Date(session.date).toISOString().slice(0, 10) : `missing-${seenDates.size}`;
+                        if (seenDates.has(dateKey))
+                            return false;
+                        seenDates.add(dateKey);
+                        return true;
+                    }).reverse();
+                    const cleanedData = history.length === (savedData.history || []).length
+                        ? savedData
+                        : { ...savedData, history, previous: history.at(-1) || null };
+                    if (cleanedData !== savedData)
+                        await window.storage.set(key, JSON.stringify(cleanedData), false);
+                    setDayData(cleanedData);
                 }
                 else {
                     setDayData({ previous: null, history: [], current: { date: null, exercises: {} } });
@@ -4284,6 +4331,7 @@ function ProgramBuilder() {
         { value: "echec", label: "🥵 Échec", color: "#D9668F" },
     ];
     const hasCurrentData = dayData && dayData.current && Object.keys(dayData.current.exercises || {}).length > 0;
+    const hasRecordedData = hasCurrentData && Object.values(dayData.current.exercises).some(sets => (sets || []).some(set => Number(set?.reps) > 0 && (Number(set?.weight) > 0 || set?.reps)));
     const currentWeek = weekNumber(programStartDate);
     const coachStatus = getCoachStatus(currentWeek, answers.goal);
     function getSessionCompletion() {
@@ -4783,8 +4831,8 @@ function ProgramBuilder() {
                             dashboardData?.previousWeekVolume || 0,
                             " kg avant"))),
                 React.createElement("div", { className: "grid grid-cols-2 gap-2" },
-                    React.createElement("div", { className: "mc-stat" }, React.createElement("span", null, "Séries validées"), React.createElement("strong", null, dashboardData?.weeklySets || 0), React.createElement("small", null, `${dashboardData?.weeklyWeightedSets || 0} avec charge`)),
-                    React.createElement("div", { className: "mc-stat" }, React.createElement("span", null, "Répétitions"), React.createElement("strong", null, dashboardData?.weeklyReps || 0), React.createElement("small", null, `${dashboardData?.weeklyExercises || 0} exercices`)),
+                    React.createElement("div", { className: "mc-stat" }, React.createElement("span", null, "Séries principales"), React.createElement("strong", null, dashboardData?.weeklySets || 0), React.createElement("small", null, `${dashboardData?.weeklyWeightedSets || 0} avec charge · ${dashboardData?.reinforcementSets || 0} renforcement à part`)),
+                    React.createElement("div", { className: "mc-stat" }, React.createElement("span", null, "Répétitions principales"), React.createElement("strong", null, dashboardData?.weeklyReps || 0), React.createElement("small", null, `${dashboardData?.weeklyExercises || 0} exercices · renforcement séparé`)),
                     React.createElement("div", { className: "mc-stat" }, React.createElement("span", null, "Volume moyen"), React.createElement("strong", null, dashboardData?.averageSessionVolume ? `${dashboardData.averageSessionVolume} kg` : "—"), React.createElement("small", null, "par séance")),
                     React.createElement("div", { className: "mc-stat" }, React.createElement("span", null, "PR / exercices"), React.createElement("strong", null, dashboardData?.prs?.length || 0), React.createElement("small", null, "charges enregistrées"))),
                 dashboardData?.neglected?.length > 0 && (React.createElement("div", { className: "rounded-lg p-4", style: { background: `${colors.accent}1a`, border: `1px solid ${colors.accent}` } },
@@ -5812,14 +5860,14 @@ function ProgramBuilder() {
                             border: `1px solid ${currentRPE === opt.value ? opt.color : colors.border}`,
                         } }, opt.label)))))),
                 React.createElement("div", { className: "flex gap-2 mt-2" },
-                    React.createElement("button", { onClick: finishSession, disabled: !hasCurrentData, className: "flex-1 py-3 rounded-lg uppercase flex items-center justify-center gap-2", style: {
+                    React.createElement("button", { onClick: finishSession, disabled: !hasRecordedData, className: "flex-1 py-3 rounded-lg uppercase flex items-center justify-center gap-2", style: {
                             fontFamily: displayFont,
                             fontWeight: 700,
                             letterSpacing: "0.04em",
                             fontSize: 14,
-                            background: hasCurrentData ? colors.accent : colors.surface,
-                            color: hasCurrentData ? "#181B18" : colors.faint,
-                            border: `1px solid ${hasCurrentData ? colors.accent : colors.border}`,
+                            background: hasRecordedData ? colors.accent : colors.surface,
+                            color: hasRecordedData ? "#181B18" : colors.faint,
+                            border: `1px solid ${hasRecordedData ? colors.accent : colors.border}`,
                         } },
                         React.createElement(Check, { size: 16 }),
                         " ",
