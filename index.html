@@ -1518,17 +1518,28 @@ function ensureTrapeziusExercises(program, answers = {}) {
         .slice(0, directDays);
     const selectedDays = new Set(eligibleDays.map((entry) => entry.index));
     return program.map((day, dayIndex) => {
-        if (!selectedDays.has(dayIndex)) return day;
-        const candidate = filterPool("Trapèzes", answers.equip, limitations, answers.level || "intermediaire").find((ex) => !day.exercises.some((current) => current.name === ex.name));
-        if (!candidate) return day;
-        const exercise = {
-            ...withId(candidate),
-            category: "Trapèzes",
-            target: `${getExerciseSetCount("Trapèzes", answers.level, answers.goal, trainingDays, answers.recovery)}x${candidate.isTime ? "30-45" : scheme.reps}`,
-            rest: scheme.rest,
-            portion: candidate.portion || classifyPortion("Trapèzes", candidate.subgroup || "", candidate.name || ""),
-        };
-        return { ...day, exercises: [...day.exercises, exercise] };
+        const existingTrapezius = day.exercises.filter((ex) => ex.category === "Trapèzes");
+        if (!selectedDays.has(dayIndex) && !existingTrapezius.length) return day;
+        let exercise = existingTrapezius[0];
+        if (!exercise) {
+            const candidates = filterPool("Trapèzes", answers.equip, limitations, answers.level || "intermediaire")
+                .filter((ex) => !day.exercises.some((current) => current.name === ex.name));
+            const rotation = [...selectedDays].indexOf(dayIndex);
+            const candidate = candidates[rotation >= 0 ? rotation % Math.max(1, candidates.length) : 0];
+            if (!candidate) return day;
+            exercise = {
+                ...withId(candidate),
+                category: "Trapèzes",
+                target: `${getExerciseSetCount("Trapèzes", answers.level, answers.goal, trainingDays, answers.recovery)}x${candidate.isTime ? "30-45" : scheme.reps}`,
+                rest: scheme.rest,
+                portion: candidate.portion || classifyPortion("Trapèzes", candidate.subgroup || "", candidate.name || ""),
+            };
+        }
+        const withoutTrapezius = day.exercises.filter((ex) => ex.category !== "Trapèzes");
+        const reinforcementIndex = withoutTrapezius.findIndex((ex) => ex.isRenforcement || ex.category === RENFORCEMENT_CATEGORY);
+        const insertAt = reinforcementIndex >= 0 ? reinforcementIndex : withoutTrapezius.length;
+        withoutTrapezius.splice(insertAt, 0, exercise);
+        return { ...day, exercises: withoutTrapezius };
     });
 }
 function buildSupersetGroups(exercises, trainingStyle) {
