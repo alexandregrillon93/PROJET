@@ -776,7 +776,7 @@ const ADAPTIVE_SPLITS = {
             { title: "Full Body B — Confirmé", slots: [["Pectoraux", 1], ["Dos", 1], ["Épaules", 1], ["Triceps", 1], ["Biceps", 1], ["Mollets", 1]] },
         ],
         4: [
-            { title: "Upper A — Confirmé", slots: [["Pectoraux", 2], ["Dos", 1], ["Épaules", 1], ["Biceps", 1], ["Triceps", 1], ["Trapèzes", 1]] },
+            { title: "Upper A — Confirmé", slots: [["Pectoraux", 2], ["Dos", 2], ["Épaules", 1], ["Biceps", 1], ["Triceps", 1], ["Trapèzes", 1]] },
             { title: "Lower A — Confirmé", slots: [["Jambes", 1], ["Ischios/Fessiers", 1], ["Mollets", 1], ["Core", 1]] },
             { title: "Upper B — Confirmé", slots: [["Dos", 1], ["Pectoraux", 1], ["Épaules", 2], ["Biceps", 1], ["Triceps", 1], ["Trapèzes", 1]] },
             { title: "Lower B — Confirmé", slots: [["Ischios/Fessiers", 1], ["Jambes", 1], ["Mollets", 1], ["Core", 1]] },
@@ -1745,10 +1745,55 @@ function generateProgram(answers) {
     // total d'un muscle.
     const fitted = fitProgramToDuration(repaired, answers);
     const rebalanced = rebalanceWeeklyVolume(fitted, answers);
-    return ensureTrapeziusExercises(repairPortionCoverage(rebalanced, answers), answers).map((day, dayIndex) => ({
+    const uniqueProgram = repairDuplicateExercises(ensureTrapeziusExercises(repairPortionCoverage(rebalanced, answers), answers), answers);
+    return uniqueProgram.map((day, dayIndex) => ({
         ...day,
         supersets: dayIndex === 0 ? [] : buildSupersetGroups(day.exercises, answers.training_style),
     }));
+}
+function repairDuplicateExercises(program, answers = {}) {
+    const usedNames = new Set();
+    const limitations = (answers.limitations || []).filter(l => l !== 'aucune');
+    return (program || []).map(day => ({
+        ...day,
+        exercises: (day.exercises || []).map(ex => {
+            if (ex.isRenforcement || !usedNames.has(ex.name)) {
+                usedNames.add(ex.name);
+                return ex;
+            }
+            const alternatives = filterPool(ex.category, answers.equip, limitations, answers.level, true)
+                .filter(candidate => !usedNames.has(candidate.name))
+                .sort((a, b) => {
+                    const aSamePortion = (a.portion || classifyPortion(ex.category, a.subgroup || '', a.name || '')) === ex.portion ? 1 : 0;
+                    const bSamePortion = (b.portion || classifyPortion(ex.category, b.subgroup || '', b.name || '')) === ex.portion ? 1 : 0;
+                    return bSamePortion - aSamePortion;
+                });
+            const replacement = alternatives[0];
+            if (!replacement) return ex;
+            const next = withId({ ...replacement, category: ex.category });
+            usedNames.add(next.name);
+            return { ...next, target: ex.target, rest: ex.rest };
+        })
+    }));
+}
+const ACCESSORY_ROTATIONS = [
+    { weeks: [1, 2], category: "Trapèzes", name: "Élévation en Y (Y-raise)" },
+    { weeks: [3, 4], category: "Biceps", name: "Curl marteau" },
+    { weeks: [5, 6], category: "Triceps", name: "Extension à la poulie prise inversée" },
+];
+function rotateAccessoryExercises(day, answers, week) {
+    if (!day?.exercises?.length) return day?.exercises || [];
+    const rotation = ACCESSORY_ROTATIONS.find(item => item.weeks.includes(week));
+    if (!rotation || !day.exercises.some(ex => ex.category === rotation.category)) return day.exercises;
+    const limitations = (answers?.limitations || []).filter(value => value !== "aucune");
+    const candidate = filterPool(rotation.category, answers?.equip, limitations, answers?.level || "intermediaire", true)
+        .find(ex => ex.name === rotation.name);
+    if (!candidate) return day.exercises;
+    const index = [...day.exercises].map((ex, i) => ({ ex, i })).reverse().find(item => item.ex.category === rotation.category)?.i;
+    if (index == null || day.exercises[index].name === candidate.name) return day.exercises;
+    return day.exercises.map((ex, i) => i === index
+        ? withId({ ...candidate, category: rotation.category, target: ex.target, rest: ex.rest })
+        : ex);
 }
 function fitProgramToDuration(program, answers = {}) {
     const target = DURATION_TARGETS[answers.duration] || [30, 45];
@@ -2092,6 +2137,16 @@ function currentWeekRange() {
     sunday.setDate(monday.getDate() + 6);
     return { monday, sunday };
 }
+function cycleWeekRange(startDateIso, weekIndex = 1) {
+    const start = startDateIso instanceof Date ? new Date(startDateIso) : new Date(startDateIso || Date.now());
+    if (Number.isNaN(start.getTime())) return currentWeekRange();
+    start.setHours(0, 0, 0, 0);
+    start.setDate(start.getDate() + (Math.max(1, weekIndex) - 1) * 7);
+    const end = new Date(start);
+    end.setDate(start.getDate() + 6);
+    end.setHours(23, 59, 59, 999);
+    return { monday: start, sunday: end };
+}
 function weeklyProgramStatus(program, trainingLog) {
     const { monday, sunday } = currentWeekRange();
     return program.map((day, i) => {
@@ -2108,6 +2163,13 @@ function weeklyProgramStatus(program, trainingLog) {
             status = "missed";
         return { title: day.title, status, dayIndex: i };
     });
+}
+function getProgramAdherence(program, trainingLog) {
+    if (!program?.length) return 0;
+    const completedDays = new Set((trainingLog || [])
+        .filter(entry => entry?.status === "completed" && Number.isInteger(entry.dayIndex) && entry.dayIndex >= 0 && entry.dayIndex < program.length)
+        .map(entry => String(entry.dayIndex)));
+    return Math.min(100, Math.round((completedDays.size / program.length) * 100));
 }
 function optimizeProgramSafety(program, answers) {
     if (!program?.length)
@@ -2685,6 +2747,11 @@ function FeatureStrip() {
         React.createElement("div", { className: "mc-feature-label" }, label),
         React.createElement("div", { className: "mc-feature-caption" }, caption))))));
 }
+function formatProgressionMetric(item) {
+    if (item?.isTime) return `${item.first?.reps || 0} s → ${item.last?.reps || 0} s`;
+    if (item?.isBodyweight) return `${item.first?.reps || 0} reps → ${item.last?.reps || 0} reps`;
+    return `${item.first?.weight || 0} kg × ${item.first?.reps || 0} → ${item.last?.weight || 0} kg × ${item.last?.reps || 0}`;
+}
 function StatsProgressionCard({ data, colors, displayFont, dataFont }) {
   const rows = (data?.exerciseProgress || []).slice(0, 12);
   return React.createElement("div", { className: "mc-v12-card" },
@@ -2693,7 +2760,7 @@ function StatsProgressionCard({ data, colors, displayFont, dataFont }) {
       React.createElement("span", { className: "mc-v12-pill" }, `${rows.length} suivis`)),
     rows.length ? rows.map(h => React.createElement("div", { key: h.id, className: "rounded p-2 mb-2", style: { background: colors.surfaceAlt, border: `1px solid ${colors.border}` } },
       React.createElement("div", { className: "flex items-center justify-between gap-2" }, React.createElement("strong", { style: { fontSize: 12, fontFamily: displayFont } }, h.name), React.createElement("span", { style: { fontSize: 10, color: colors.faint } }, `${h.sessions.length} séance${h.sessions.length > 1 ? "s" : ""}`)),
-      React.createElement("div", { className: "flex items-center justify-between mt-1", style: { fontSize: 11, fontFamily: dataFont } }, React.createElement("span", null, `${h.first?.weight || 0} kg × ${h.first?.reps || 0} → ${h.last?.weight || 0} kg × ${h.last?.reps || 0}`), React.createElement("span", { style: { color: h.weightDelta > 0 || h.repsDelta > 0 ? colors.good : h.weightDelta < 0 || h.repsDelta < 0 ? colors.accent : colors.muted } }, `${h.weightDelta > 0 ? "+" : ""}${h.weightDelta} kg · ${h.repsDelta > 0 ? "+" : ""}${h.repsDelta} reps`)),
+    React.createElement("div", { className: "flex items-center justify-between mt-1", style: { fontSize: 11, fontFamily: dataFont } }, React.createElement("span", null, formatProgressionMetric(h)), React.createElement("span", { style: { color: h.weightDelta > 0 || h.repsDelta > 0 ? colors.good : h.weightDelta < 0 || h.repsDelta < 0 ? colors.accent : colors.muted } }, `${h.isTime || h.isBodyweight ? `${h.repsDelta > 0 ? "+" : ""}${h.repsDelta} reps` : `${h.weightDelta > 0 ? "+" : ""}${h.weightDelta} kg · ${h.repsDelta > 0 ? "+" : ""}${h.repsDelta} reps`}`)),
       h.last?.e1rm > 0 ? React.createElement("div", { style: { color: colors.faint, fontSize: 10, marginTop: 2 } }, `1RM estimé ${h.last.e1rm} kg · évolution ${h.e1rmDelta > 0 ? "+" : ""}${h.e1rmDelta} kg`) : null)) : React.createElement("div", { className: "mc-v12-muted" }, "Valide des séries avec une charge pour suivre la progression exercice par exercice."));
 }
 function StatsHistoryCard({ data, colors, displayFont, dataFont }) {
@@ -2928,6 +2995,8 @@ function ProgramBuilder() {
     const step = STEPS[stepIndex];
     const isLastStep = stepIndex === STEPS.length - 1;
     const currentDay = program ? program[selectedDayIndex] : null;
+    const currentWeek = weekNumber(programStartDate);
+    const activeDay = currentDay ? { ...currentDay, exercises: rotateAccessoryExercises(currentDay, answers, currentWeek) } : null;
     useEffect(() => {
         const timer = setTimeout(() => setShowSplash(false), 2300);
         return () => clearTimeout(timer);
@@ -3241,7 +3310,17 @@ function ProgramBuilder() {
                 return;
             }
 
-            const { monday, sunday } = currentWeekRange();
+            const parsedProgramAnchor = programStartDate ? new Date(programStartDate) : null;
+            // A saved timestamp can be a few hours ahead after regeneration or timezone conversion.
+            // Never put a session logged today before the start of the active cycle.
+            const todayStart = new Date();
+            todayStart.setHours(0, 0, 0, 0);
+            const programAnchor = parsedProgramAnchor && !Number.isNaN(parsedProgramAnchor.getTime()) && parsedProgramAnchor <= todayStart
+                ? parsedProgramAnchor
+                : todayStart;
+            const elapsedDays = Number.isNaN(programAnchor.getTime()) ? 0 : Math.floor((Date.now() - programAnchor.getTime()) / 86400000);
+            const cycleWeek = Math.min(CYCLE_WEEKS, Math.max(1, Math.floor(elapsedDays / 7) + 1));
+            const { monday, sunday } = cycleWeekRange(programAnchor, cycleWeek);
             const previousMonday = new Date(monday); previousMonday.setDate(previousMonday.getDate() - 7);
             const previousSunday = new Date(sunday); previousSunday.setDate(previousSunday.getDate() - 7);
             const mondayKey = localDateKey(monday), sundayKey = localDateKey(sunday);
@@ -3293,7 +3372,9 @@ function ProgramBuilder() {
             const canonical = [];
             const canonicalKeys = new Set();
             for (const entry of completedEntries) {
-                const date = validDate(entry.session?.date || `${entry.date}T12:00:00`);
+                // The log date is the user's local validation day. Prefer it over
+                // the session timestamp, which can cross a timezone boundary.
+                const date = validDate(entry.date ? `${entry.date}T12:00:00` : entry.session?.date);
                 if (!date) continue;
                 const dayIndex = entry.dayIndex;
                 const key = `${localDateKey(date)}|${dayIndex}`;
@@ -3339,7 +3420,11 @@ function ProgramBuilder() {
             const sessionVolumes = [];
             const exerciseHistory = {};
 
-            const ingestSession = (entry, inWeek, inPreviousWeek) => {
+            const cycleStartKey = localDateKey(programAnchor);
+            const cycleEndDate = new Date(programAnchor);
+            cycleEndDate.setDate(cycleEndDate.getDate() + CYCLE_WEEKS * 7 - 1);
+            const cycleEndKey = localDateKey(cycleEndDate);
+            const ingestSession = (entry, inWeek, inPreviousWeek, inCycle) => {
                 let sessionVolume = 0;
                 Object.entries(entry.exercises || {}).forEach(([exId, sets]) => {
                     const info = { ...(idToInfo[exId] || {}), ...(entry.exerciseMeta?.[exId] || {}) };
@@ -3376,13 +3461,37 @@ function ProgramBuilder() {
                                 if (!prMap[exId] || w > prMap[exId].weight || (w === prMap[exId].weight && e1rm > prMap[exId].e1rm)) {
                                     prMap[exId] = { id: exId, weight: w, reps: r, e1rm, ...info };
                                 }
-                                if (inWeek) {
-                                    exerciseHistory[exId] ||= { id: exId, name: info.name || exId, category: info.category || "", portion: info.portion || null, sessions: [] };
-                                    exerciseHistory[exId].sessions.push({ date: entry.dateKey, weight: w, reps: r, e1rm });
-                                }
                             }
                         }
                     });
+                    if (inCycle && info.category && info.category !== RENFORCEMENT_CATEGORY && !info.isRenforcement) {
+                        const performed = rows.filter(set => setPerformed(set, info));
+                        if (performed.length) {
+                            const best = performed.reduce((current, set) => {
+                                const currentWeight = parseFloat(current?.weight) || 0;
+                                const currentReps = parseFloat(current?.reps) || 0;
+                                const weight = parseFloat(set?.weight) || 0;
+                                const reps = parseFloat(set?.reps) || 0;
+                                const currentScore = isWeighted(info) ? estimate1RM(currentWeight, currentReps) : currentReps;
+                                const score = isWeighted(info) ? estimate1RM(weight, reps) : reps;
+                                return score > currentScore ? set : current;
+                            }, performed[0]);
+                            const weight = parseFloat(best?.weight) || 0;
+                            const reps = parseFloat(best?.reps) || 0;
+                            exerciseHistory[exId] ||= { id: exId, name: info.name || exId, category: info.category || "", portion: info.portion || null, isTime: !!info.isTime, isBodyweight: !!info.isBodyweight, sessions: [] };
+                            exerciseHistory[exId].sessions.push({ date: entry.dateKey, weight, reps, e1rm: isWeighted(info) ? estimate1RM(weight, reps) : 0 });
+                        }
+                    }
+                    if (!isWeighted(info) && info.category && info.category !== RENFORCEMENT_CATEGORY && !info.isRenforcement) {
+                        const performed = rows.filter(set => setPerformed(set, info));
+                        if (performed.length) {
+                            const best = performed.reduce((current, set) => (parseFloat(set?.reps) || 0) > (parseFloat(current?.reps) || 0) ? set : current, performed[0]);
+                            const reps = parseFloat(best?.reps) || 0;
+                            if (!prMap[exId] || reps > (prMap[exId].reps || 0)) {
+                                prMap[exId] = { id: exId, weight: null, reps, e1rm: 0, ...info };
+                            }
+                        }
+                    }
                     if (inWeek && info.category && info.category !== RENFORCEMENT_CATEGORY && rows.some(s => setPerformed(s, info))) {
                         lastTrainedByCategory[info.category] = entry.dateObj;
                     }
@@ -3393,7 +3502,8 @@ function ProgramBuilder() {
             canonical.forEach(entry => {
                 const inWeek = entry.dateKey >= mondayKey && entry.dateKey <= sundayKey;
                 const inPreviousWeek = entry.dateKey >= previousMondayKey && entry.dateKey <= previousSundayKey;
-                if (inWeek || inPreviousWeek) ingestSession(entry, inWeek, inPreviousWeek);
+                const inCycle = entry.dateKey >= cycleStartKey && entry.dateKey <= cycleEndKey;
+                if (inWeek || inPreviousWeek || inCycle) ingestSession(entry, inWeek, inPreviousWeek, inCycle);
                 else {
                     Object.entries(entry.exercises || {}).forEach(([exId, sets]) => {
                         const info = { ...(idToInfo[exId] || {}), ...(entry.exerciseMeta?.[exId] || {}) };
@@ -3430,8 +3540,7 @@ function ProgramBuilder() {
             const bwLog = await readJson("bodyweight-log", []);
             const kcalLog = await readJson("calorie-log", []);
             const weeklyHistory = Array.from({length: CYCLE_WEEKS}, (_, idx) => {
-                const start = new Date(monday); start.setDate(start.getDate() - (CYCLE_WEEKS - 1 - idx) * 7);
-                const end = new Date(start); end.setDate(end.getDate() + 6);
+                const { monday: start, sunday: end } = cycleWeekRange(programAnchor, idx + 1);
                 const sk = localDateKey(start), ek = localDateKey(end);
                 const rows = canonical.filter(e => e.dateKey >= sk && e.dateKey <= ek && plannedDaySet.has(String(e.dayIndex)));
                 const days = new Set(rows.map(e => String(e.dayIndex))).size;
@@ -3441,13 +3550,13 @@ function ProgramBuilder() {
                     if (!isWeighted(info)) return;
                     (sets || []).forEach(s => { const w=parseFloat(s?.weight), r=parseFloat(s?.reps); if (setPerformed(s,info) && Number.isFinite(w) && Number.isFinite(r)) vol += w*r; });
                 }));
-                return { week: idx + 1, sessions: days, planned: plannedSessions, adherence: plannedSessions ? Math.round(days/plannedSessions*100) : 0, volume: Math.round(vol) };
+                return { week: idx + 1, sessions: days, planned: plannedSessions, adherence: plannedSessions ? Math.round(days/plannedSessions*100) : 0, volume: Math.round(vol), current: idx + 1 === cycleWeek };
             });
             const exerciseProgress = Object.values(exerciseHistory).map(h => {
                 h.sessions.sort((a,b) => a.date.localeCompare(b.date));
                 const first = h.sessions[0], last = h.sessions[h.sessions.length - 1];
                 return { ...h, first, last, weightDelta: last && first ? last.weight - first.weight : 0, repsDelta: last && first ? last.reps - first.reps : 0, e1rmDelta: last && first ? last.e1rm - first.e1rm : 0 };
-            }).sort((a,b) => (b.last?.e1rm || 0) - (a.last?.e1rm || 0)).slice(0, 12);
+            }).sort((a,b) => (b.sessions.length - a.sessions.length) || (b.last?.e1rm || b.last?.reps || 0) - (a.last?.e1rm || a.last?.reps || 0)).slice(0, 12);
 
             const sessionKeys = new Set(weekEntries.map(e => `${e.dateKey}|${e.dayIndex}`));
             setDashboardData({
@@ -3597,9 +3706,11 @@ function ProgramBuilder() {
         setAnswers(nextAnswers);
         if (isLastStep) {
             const generatedProgram = generateProgram(nextAnswers);
+            const cycleStart = new Date().toISOString();
+            await startNewProgramCycle();
             setProgram(generatedProgram);
-            await persistProgramSnapshot(generatedProgram, nextAnswers);
-            setProgramStartDate(prev => prev || new Date().toISOString());
+            setProgramStartDate(cycleStart);
+            await persistProgramSnapshot(generatedProgram, nextAnswers, cycleStart);
             setMode("result");
         } else {
             try { await window.storage?.set("questionnaire-draft", JSON.stringify(nextAnswers), false); } catch (_) {}
@@ -3632,23 +3743,37 @@ function ProgramBuilder() {
         const nextAnswers = answers;
         if (isLastStep) {
             const generatedProgram = generateProgram(nextAnswers);
+            const cycleStart = new Date().toISOString();
+            await startNewProgramCycle();
             setProgram(generatedProgram);
-            await persistProgramSnapshot(generatedProgram, nextAnswers);
+            setProgramStartDate(cycleStart);
+            await persistProgramSnapshot(generatedProgram, nextAnswers, cycleStart);
             setMode("result");
         } else {
             try { await window.storage?.set("questionnaire-draft", JSON.stringify(nextAnswers), false); } catch (_) {}
             setStepIndex(stepIndex + 1);
         }
     }
+    async function startNewProgramCycle() {
+        try {
+            const keys = await window.storage?.list("custom-session:");
+            for (const key of (keys?.keys || [])) await window.storage.delete(key);
+            await window.storage?.set("stats-session-log", "[]", false);
+        } catch (_) {
+            // Best effort: the new cycle still gets its own start date.
+        }
+        setDayData({ previous: null, history: [], current: { date: null, exercises: {} } });
+        setTrainingLog(prev => (Array.isArray(prev) ? prev : []));
+    }
     function goBack() {
         if (stepIndex > 0)
             setStepIndex(stepIndex - 1);
     }
-    async function persistProgramSnapshot(prog, answersToSave = answers) {
+    async function persistProgramSnapshot(prog, answersToSave = answers, startDateOverride = null) {
         try {
             if (!window.storage)
                 return;
-            let startDate = programStartDate || new Date().toISOString();
+            let startDate = startDateOverride || programStartDate || new Date().toISOString();
             const snapshot = { answers: answersToSave, program: prog, date: startDate, cycleWeeks: CYCLE_WEEKS, lastUpdated: new Date().toISOString() };
             const serialized = JSON.stringify(snapshot);
             await window.storage.set("custom-program", serialized, false);
@@ -3919,7 +4044,12 @@ function ProgramBuilder() {
                     return;
                 if (result && result.value) {
                     const savedData = JSON.parse(result.value);
-                    const usableHistory = (savedData.history || []).filter(session => Object.values(session.exercises || {}).some(sets => (sets || []).some(set => Number(set?.reps) > 0 && (Number(set?.weight) > 0 || set?.reps))));
+                    const cycleStart = programStartDate ? new Date(programStartDate) : null;
+                    const usableHistory = (savedData.history || []).filter(session => {
+                        const sessionDate = new Date(session.date);
+                        const belongsToCycle = !cycleStart || Number.isNaN(cycleStart.getTime()) || sessionDate >= cycleStart;
+                        return belongsToCycle && Object.values(session.exercises || {}).some(sets => (sets || []).some(set => Number(set?.reps) > 0 && (Number(set?.weight) > 0 || set?.reps)));
+                    });
                     const seenDates = new Set();
                     const history = usableHistory.slice().reverse().filter(session => {
                         const dateKey = session.date ? new Date(session.date).toISOString().slice(0, 10) : `missing-${seenDates.size}`;
@@ -4104,13 +4234,13 @@ function ProgramBuilder() {
         const recMod = recoveryModifier(todayRecovery);
         return basePlan.map((sets, i) => {
             if (week === CYCLE_WEEKS) return sets;
-            const ex = currentDay.exercises[i];
+            const ex = activeDay.exercises[i];
             const floor = ex?.isRenforcement ? 1 : 2;
             return Math.min(sets, Math.max(floor, Math.round(sets * recMod.factor)));
         });
     }
     function getExSets(exId) {
-        const index = currentDay.exercises.findIndex((e) => e.id === exId);
+        const index = activeDay.exercises.findIndex((e) => e.id === exId);
         const week = weekNumber(programStartDate);
         const plan = getCurrentDaySetPlan();
         const targetSets = plan[index] || 1;
@@ -4121,7 +4251,7 @@ function ProgramBuilder() {
         return base;
     }
     function getWeeklyExerciseTarget(ex) {
-        const index = currentDay.exercises.findIndex((e) => e.id === ex.id);
+        const index = activeDay.exercises.findIndex((e) => e.id === ex.id);
         const sets = getCurrentDaySetPlan()[index] || 1;
         return `${sets}x${(ex.target.split("x")[1] || "8-12").trim()}`;
     }
@@ -4264,7 +4394,7 @@ function ProgramBuilder() {
     async function finishSession() {
         const startTime = dayData?.current?.date;
         const nowIso = new Date().toISOString();
-        const exerciseMeta = Object.fromEntries((currentDay?.exercises || []).map((ex) => [
+        const exerciseMeta = Object.fromEntries((activeDay?.exercises || []).map((ex) => [
             ex.id,
             { name: ex.name, category: ex.category, portion: ex.portion || classifyPortion(ex.category, ex.subgroup || "", ex.name || "") || null, isTime: !!ex.isTime, isBodyweight: !!ex.isBodyweight }
         ]));
@@ -4342,14 +4472,14 @@ function ProgramBuilder() {
         { value: "echec", label: "🥵 Échec", color: "#D9668F" },
     ];
     const hasCurrentData = dayData && dayData.current && Object.keys(dayData.current.exercises || {}).length > 0;
+    const hasAnySessionInput = hasCurrentData && Object.values(dayData.current.exercises).some(sets => (sets || []).some(set => set?.weight !== "" || set?.reps !== ""));
     const hasRecordedData = hasCurrentData && Object.values(dayData.current.exercises).some(sets => (sets || []).some(set => Number(set?.reps) > 0 && (Number(set?.weight) > 0 || set?.reps)));
-    const currentWeek = weekNumber(programStartDate);
     const coachStatus = getCoachStatus(currentWeek, answers.goal);
     function getSessionCompletion() {
         if (!currentDay)
             return { done: 0, total: 0, pct: 0 };
         let done = 0, total = 0;
-        currentDay.exercises.forEach((ex) => { const sets = getExSets(ex.id); total += sets.length; done += sets.filter((x) => x.done).length; });
+        activeDay.exercises.forEach((ex) => { const sets = getExSets(ex.id); total += sets.length; done += sets.filter((x) => x.done).length; });
         return { done, total, pct: total ? Math.round((done / total) * 100) : 0 };
     }
     const sessionProgress = mode === "track" ? getSessionCompletion() : { done: 0, total: 0, pct: 0 };
@@ -4554,7 +4684,7 @@ function ProgramBuilder() {
                 React.createElement("div", { className: "mc-stat" },
                     React.createElement("span", null, "Assiduit\u00E9"),
                     React.createElement("strong", null,
-                        Math.min(100, Math.round((trainingLog.filter(x => x.status === "completed").length / Math.max(1, program.length * 2)) * 100)),
+                        getProgramAdherence(program, trainingLog),
                         "%")),
                 React.createElement("div", { className: "mc-stat" },
                     React.createElement("span", null, "S\u00E9ances"),
@@ -4989,8 +5119,8 @@ function ProgramBuilder() {
                                         color: "#181B18",
                                         textShadow: "0 1px 0 rgba(255,255,255,0.3)",
                                         lineHeight: 1,
-                                    } }, pr.weight),
-                                React.createElement("span", { style: { fontFamily: dataFont, fontSize: 8, color: "#181B18", opacity: 0.75, lineHeight: 1 } }, "kg")),
+                                    } }, pr.weight != null ? pr.weight : pr.reps),
+                                                                React.createElement("span", { style: { fontFamily: dataFont, fontSize: 8, color: "#181B18", opacity: 0.75, lineHeight: 1 } }, pr.weight != null ? "kg" : pr.isTime ? "sec" : "reps")),
                             React.createElement("div", { className: "flex-1" },
                                 React.createElement("div", { style: { fontFamily: displayFont, fontSize: 13 } }, pr.name),
                                 pr.e1rm > 0 && React.createElement("div", { style: { fontFamily: dataFont, fontSize: 10, color: colors.faint } },
@@ -5706,7 +5836,7 @@ function ProgramBuilder() {
                 React.createElement("div", { style: { background: colors.surface, border: `1px solid ${colors.border}` }, className: "rounded-lg p-3" },
                     React.createElement("div", { style: { fontFamily: displayFont, fontWeight: 600, fontSize: 14 }, className: "mb-2" }, "\uD83D\uDD25 \u00C9chauffement (5-8 min)"),
                     React.createElement("ul", { style: { color: colors.muted, fontSize: 12 }, className: "flex flex-col gap-1 pl-4 list-disc" }, WARMUP.map((w, i) => (React.createElement("li", { key: i }, w))))),
-                currentDay.exercises.map((ex, exIndex) => {
+                activeDay.exercises.map((ex, exIndex) => {
                     const sets = getExSets(ex.id);
                     const prevSets = getPrevSets(ex.id);
                     const isTime = ex.isTime;
@@ -5716,7 +5846,7 @@ function ProgramBuilder() {
                     const adaptive = getAdaptiveCoach(ex, dayData?.history || [], dayData?.previous, currentWeek, answers.goal, answers.recovery);
                     const series = getTopWeightSeries(ex.id);
                     const group = getGroupForIndex(currentDay.supersets, exIndex);
-                    const isLastOverall = exIndex === currentDay.exercises.length - 1;
+                    const isLastOverall = exIndex === activeDay.exercises.length - 1;
                     const linkedToNext = group && group.includes(exIndex + 1);
                     return (React.createElement(Fragment, { key: ex.id },
                         React.createElement("div", { style: { background: colors.surface, border: `1px solid ${group ? "#F2C94C" : colors.border}`, borderLeft: `4px solid ${catColor}` }, className: "rounded-lg p-3" },
@@ -5871,14 +6001,14 @@ function ProgramBuilder() {
                             border: `1px solid ${currentRPE === opt.value ? opt.color : colors.border}`,
                         } }, opt.label)))))),
                 React.createElement("div", { className: "flex gap-2 mt-2" },
-                    React.createElement("button", { onClick: finishSession, disabled: !hasRecordedData, className: "flex-1 py-3 rounded-lg uppercase flex items-center justify-center gap-2", style: {
+                    React.createElement("button", { onClick: finishSession, disabled: !hasAnySessionInput, className: "flex-1 py-3 rounded-lg uppercase flex items-center justify-center gap-2", style: {
                             fontFamily: displayFont,
                             fontWeight: 700,
                             letterSpacing: "0.04em",
                             fontSize: 14,
-                            background: hasRecordedData ? colors.accent : colors.surface,
-                            color: hasRecordedData ? "#181B18" : colors.faint,
-                            border: `1px solid ${hasRecordedData ? colors.accent : colors.border}`,
+                            background: hasAnySessionInput ? colors.accent : colors.surface,
+                            color: hasAnySessionInput ? "#181B18" : colors.faint,
+                            border: `1px solid ${hasAnySessionInput ? colors.accent : colors.border}`,
                         } },
                         React.createElement(Check, { size: 16 }),
                         " ",
