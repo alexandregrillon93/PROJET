@@ -230,6 +230,11 @@
 .mc-v12-sheet{width:min(100%,520px);max-height:88vh;overflow:auto;background:#071522;border:1px solid #1D405B;border-radius:24px 24px 0 0;padding:18px;box-shadow:0 -20px 60px rgba(0,0,0,.45)}
 .mc-v12-bar{height:8px;background:#0D2233;border-radius:999px;overflow:hidden}.mc-v12-bar>span{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,#087CFF,#12B8FF,#27D89B)}
 @media(max-width:360px){.mc-v12-grid{grid-template-columns:1fr}}
+@media(max-width:380px){
+    .mc-bottom-nav{left:6px;right:6px;gap:2px;padding:5px}
+    .mc-bottom-nav button{font-size:7px;padding-left:1px;padding-right:1px}
+    .mc-bottom-nav .nav-icon{font-size:15px}
+}
 
 .mc-light .mc-v12-card,.mc-light .mc-glass{background:#ffffff !important;border-color:#D6E3EC !important;color:#102334 !important;box-shadow:0 8px 30px rgba(16,35,52,.06)}
 .mc-light .mc-v12-muted,.mc-light .mc-stat span{color:#60798B !important}
@@ -4444,7 +4449,7 @@ function ProgramBuilder() {
             const statRes = await window.storage?.get("stats-session-log", false);
             const statLog = statRes?.value ? JSON.parse(statRes.value) : [];
             const statEntry = { date: localDateKey(finished.date), dayIndex: selectedDayIndex, dayTitle: currentDay?.title || `Séance ${selectedDayIndex + 1}`, status: "completed", session: finished };
-            const nextStatLog = [...(Array.isArray(statLog) ? statLog : []).filter(x => !(x.date === statEntry.date && String(x.dayIndex) === String(statEntry.dayIndex) && x.session?.date === finished.date)), statEntry].slice(-240);
+            const nextStatLog = [...(Array.isArray(statLog) ? statLog : []).filter(x => !(x.date === statEntry.date && String(x.dayIndex) === String(statEntry.dayIndex))), statEntry].slice(-240);
             await window.storage?.set("stats-session-log", JSON.stringify(nextStatLog), false);
         } catch (e) { console.warn("stats journal save failed", e); }
 
@@ -6135,7 +6140,7 @@ if (!window.React || !window.ReactDOM || !window.ReactDOM.createRoot) {
 <script>
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("./sw.js").catch(() => {});
+            navigator.serviceWorker.register("./sw.js", { updateViaCache: "none" }).catch(() => {});
     });
   }
 </script>
