@@ -32,6 +32,8 @@
   await new Promise(resolve => setTimeout(resolve, 900));
   const app = frame.contentWindow;
   report('validateur disponible', typeof app.validateImportBundle === 'function');
+  report('images d’exercices autonomes', Object.values(app.EXERCISE_PHOTOS || {}).every(source => String(source).startsWith('data:image/')));
+  report('aucun média externe requis', Object.values(app.EXERCISE_REMOTE_PHOTOS || {}).every(source => !/^https?:/i.test(String(source))));
   const stored = await app.storage.get('custom-program');
   const snapshot = stored?.value ? JSON.parse(stored.value) : null;
   if (!snapshot) {
