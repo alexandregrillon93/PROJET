@@ -16,7 +16,7 @@
 <body>
 <h1>Tests de non-régression</h1>
 <ul id="results"></ul>
-<iframe id="app" src="../index.html?tests=1"></iframe>
+<iframe id="app"></iframe>
 <script>
 (async () => {
   const results = document.querySelector('#results');
@@ -28,9 +28,14 @@
     if (!ok) throw new Error(name);
   };
   const frame = document.querySelector('#app');
+  const html = await fetch('../index.html').then(response => response.text());
+  frame.srcdoc = html
+    .replace('<head>', '<head><base href="../">')
+    .replace('<div id="root"></div>', '<script>delete Array.prototype.flatMap;</script><div id="root"></div>');
   await new Promise(resolve => frame.addEventListener('load', resolve, { once: true }));
   await new Promise(resolve => setTimeout(resolve, 900));
   const app = frame.contentWindow;
+  report('compatibilité sans flatMap natif', typeof app.Array.prototype.flatMap === 'function');
   report('validateur disponible', typeof app.validateImportBundle === 'function');
   report('images d’exercices autonomes', Object.values(app.EXERCISE_PHOTOS || {}).every(source => String(source).startsWith('data:image/')));
   report('aucun média externe requis', Object.values(app.EXERCISE_REMOTE_PHOTOS || {}).every(source => !/^https?:/i.test(String(source))));
