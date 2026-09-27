@@ -28,10 +28,39 @@
     if (!ok) throw new Error(name);
   };
   const frame = document.querySelector('#app');
+  const today = new Date();
+  const program = [{
+    title: 'Séance A',
+    exercises: [
+      { id: 'bench-1', name: 'Développé couché', category: 'Pectoraux', target: '3x8', rest: 90 },
+      { id: 'row-1', name: 'Rowing barre', category: 'Dos', target: '3x10', rest: 90 }
+    ]
+  }];
+  const completedSession = {
+    date: today.toISOString(),
+    exercises: {
+      'bench-1': [{ weight: 60, reps: 8 }, { weight: 60, reps: 8 }, { weight: 60, reps: 8 }],
+      'row-1': [{ weight: 50, reps: 10 }, { weight: 50, reps: 10 }, { weight: 50, reps: 10 }]
+    },
+    exerciseMeta: {}
+  };
+  const todayKey = today.toISOString().slice(0, 10);
+  const snapshot = {
+    answers: { goal: 'hypertrophie', level: 'intermediaire' },
+    program,
+    date: today.toISOString(),
+    cycleWeeks: 8,
+    lastUpdated: today.toISOString()
+  };
+  const logEntry = { date: todayKey, dayIndex: 0, dayTitle: 'Séance A', status: 'completed', session: completedSession };
+  localStorage.setItem('wt_custom-program', JSON.stringify(snapshot));
+  localStorage.setItem('wt_custom-program-backup', JSON.stringify(snapshot));
+  localStorage.setItem('wt_training-log', JSON.stringify([logEntry]));
+  localStorage.setItem('wt_stats-session-log', JSON.stringify([logEntry]));
   const html = await fetch('../index.html').then(response => response.text());
   frame.srcdoc = html
-    .replace('<head>', '<head><base href="../">')
-    .replace('<div id="root"></div>', '<script>delete Array.prototype.flatMap;</script><div id="root"></div>');
+    .replace('<head>', `<head><base href="${location.origin}/">`)
+    .replace('<div id="root"></div>', '<script>delete Array.prototype.flatMap;</' + 'script><div id="root"></div>');
   await new Promise(resolve => frame.addEventListener('load', resolve, { once: true }));
   await new Promise(resolve => setTimeout(resolve, 900));
   const app = frame.contentWindow;
@@ -40,12 +69,12 @@
   report('images d’exercices autonomes', Object.values(app.EXERCISE_PHOTOS || {}).every(source => String(source).startsWith('data:image/')));
   report('aucun média externe requis', Object.values(app.EXERCISE_REMOTE_PHOTOS || {}).every(source => !/^https?:/i.test(String(source))));
   const stored = await app.storage.get('custom-program');
-  const snapshot = stored?.value ? JSON.parse(stored.value) : null;
-  if (!snapshot) {
+  const storedSnapshot = stored?.value ? JSON.parse(stored.value) : null;
+  if (!storedSnapshot) {
     report('programme de test disponible', false, 'génère un programme avant de lancer les tests');
     return;
   }
-  const base = { app: 'Muscu Coach Pro', version: 18, customProgram: snapshot, sessions: {}, trainingLog: [], bodyweightLog: [], calorieLog: [], freestyleLog: [], cycleFeedback: [] };
+  const base = { app: 'Muscu Coach Pro', version: 18, customProgram: storedSnapshot, sessions: {}, trainingLog: [], bodyweightLog: [], calorieLog: [], freestyleLog: [], cycleFeedback: [] };
   report('sauvegarde valide acceptée', app.validateImportBundle(base).ok);
   report('version future refusée', !app.validateImportBundle({ ...base, version: 999 }).ok);
   report('liste invalide refusée', !app.validateImportBundle({ ...base, trainingLog: {} }).ok);
