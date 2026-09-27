@@ -3505,22 +3505,27 @@ function ProgramBuilder() {
             };
 
             canonical.forEach(entry => {
-                const inWeek = entry.dateKey >= mondayKey && entry.dateKey <= sundayKey;
-                const inPreviousWeek = entry.dateKey >= previousMondayKey && entry.dateKey <= previousSundayKey;
-                const inCycle = entry.dateKey >= cycleStartKey && entry.dateKey <= cycleEndKey;
-                if (inWeek || inPreviousWeek || inCycle) ingestSession(entry, inWeek, inPreviousWeek, inCycle);
-                else {
-                    Object.entries(entry.exercises || {}).forEach(([exId, sets]) => {
-                        const info = { ...(idToInfo[exId] || {}), ...(entry.exerciseMeta?.[exId] || {}) };
-                        info.portion = info.portion || classifyPortion(info.category || "", info.subgroup || "", info.name || "") || null;
-                        if (!isWeighted(info)) return;
-                        (Array.isArray(sets) ? sets : []).forEach(set => {
-                            const w=parseFloat(set?.weight), r=parseFloat(set?.reps);
-                            if (!setPerformed(set, info) || !Number.isFinite(w) || !Number.isFinite(r)) return;
-                            const e1rm=estimate1RM(w,r);
-                            if (!prMap[exId] || w>prMap[exId].weight || (w===prMap[exId].weight && e1rm>prMap[exId].e1rm)) prMap[exId]={id:exId,weight:w,reps:r,e1rm,...info};
+                // Isolate each session: a single malformed entry must not blank out the whole dashboard.
+                try {
+                    const inWeek = entry.dateKey >= mondayKey && entry.dateKey <= sundayKey;
+                    const inPreviousWeek = entry.dateKey >= previousMondayKey && entry.dateKey <= previousSundayKey;
+                    const inCycle = entry.dateKey >= cycleStartKey && entry.dateKey <= cycleEndKey;
+                    if (inWeek || inPreviousWeek || inCycle) ingestSession(entry, inWeek, inPreviousWeek, inCycle);
+                    else {
+                        Object.entries(entry.exercises || {}).forEach(([exId, sets]) => {
+                            const info = { ...(idToInfo[exId] || {}), ...(entry.exerciseMeta?.[exId] || {}) };
+                            info.portion = info.portion || classifyPortion(info.category || "", info.subgroup || "", info.name || "") || null;
+                            if (!isWeighted(info)) return;
+                            (Array.isArray(sets) ? sets : []).forEach(set => {
+                                const w=parseFloat(set?.weight), r=parseFloat(set?.reps);
+                                if (!setPerformed(set, info) || !Number.isFinite(w) || !Number.isFinite(r)) return;
+                                const e1rm=estimate1RM(w,r);
+                                if (!prMap[exId] || w>prMap[exId].weight || (w===prMap[exId].weight && e1rm>prMap[exId].e1rm)) prMap[exId]={id:exId,weight:w,reps:r,e1rm,...info};
+                            });
                         });
-                    });
+                    }
+                } catch (e) {
+                    console.warn("dashboard: skipped malformed session entry", entry?.dateKey, entry?.dayIndex, e);
                 }
             });
 
@@ -3545,17 +3550,22 @@ function ProgramBuilder() {
             const bwLog = await readJson("bodyweight-log", []);
             const kcalLog = await readJson("calorie-log", []);
             const weeklyHistory = Array.from({length: CYCLE_WEEKS}, (_, idx) => {
-                const { monday: start, sunday: end } = cycleWeekRange(programAnchor, idx + 1);
-                const sk = localDateKey(start), ek = localDateKey(end);
-                const rows = canonical.filter(e => e.dateKey >= sk && e.dateKey <= ek && plannedDaySet.has(String(e.dayIndex)));
-                const days = new Set(rows.map(e => String(e.dayIndex))).size;
-                let vol = 0;
-                rows.forEach(e => Object.entries(e.exercises || {}).forEach(([exId, sets]) => {
-                    const info = { ...(idToInfo[exId] || {}), ...(e.exerciseMeta?.[exId] || {}) };
-                    if (!isWeighted(info)) return;
-                    (sets || []).forEach(s => { const w=parseFloat(s?.weight), r=parseFloat(s?.reps); if (setPerformed(s,info) && Number.isFinite(w) && Number.isFinite(r)) vol += w*r; });
-                }));
-                return { week: idx + 1, sessions: days, planned: plannedSessions, adherence: plannedSessions ? Math.round(days/plannedSessions*100) : 0, volume: Math.round(vol), current: idx + 1 === cycleWeek };
+                try {
+                    const { monday: start, sunday: end } = cycleWeekRange(programAnchor, idx + 1);
+                    const sk = localDateKey(start), ek = localDateKey(end);
+                    const rows = canonical.filter(e => e.dateKey >= sk && e.dateKey <= ek && plannedDaySet.has(String(e.dayIndex)));
+                    const days = new Set(rows.map(e => String(e.dayIndex))).size;
+                    let vol = 0;
+                    rows.forEach(e => Object.entries(e.exercises || {}).forEach(([exId, sets]) => {
+                        const info = { ...(idToInfo[exId] || {}), ...(e.exerciseMeta?.[exId] || {}) };
+                        if (!isWeighted(info)) return;
+                        (sets || []).forEach(s => { const w=parseFloat(s?.weight), r=parseFloat(s?.reps); if (setPerformed(s,info) && Number.isFinite(w) && Number.isFinite(r)) vol += w*r; });
+                    }));
+                    return { week: idx + 1, sessions: days, planned: plannedSessions, adherence: plannedSessions ? Math.round(days/plannedSessions*100) : 0, volume: Math.round(vol), current: idx + 1 === cycleWeek };
+                } catch (e) {
+                    console.warn("dashboard: skipped malformed week", idx + 1, e);
+                    return { week: idx + 1, sessions: 0, planned: plannedSessions, adherence: 0, volume: 0, current: idx + 1 === cycleWeek };
+                }
             });
             const exerciseProgress = Object.values(exerciseHistory).map(h => {
                 h.sessions.sort((a,b) => a.date.localeCompare(b.date));
