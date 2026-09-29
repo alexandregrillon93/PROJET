@@ -5180,18 +5180,6 @@ function ProgramBuilder() {
                         React.createElement("strong", { style: { color: '#CFE6F2' } }, "Aujourd'hui :"),
                         " ",
                         dashboardData?.calorieLog?.find(e => e.date === new Date().toISOString().slice(0, 10))?.kcal || "—",
-                React.createElement("div", { className: "mc-eight-week-preview" },
-                    React.createElement("div", { className: "mc-section-title", style: { marginBottom: 2 } }, "Aperçu réel des 8 semaines"),
-                    Array.from({ length: CYCLE_WEEKS }, (_, index) => {
-                        const week = index + 1;
-                        const sets = program.reduce((total, day) => total + getWeekSetPlan(day.exercises, answers.goal, week, answers).reduce((sum, count) => sum + count, 0), 0);
-                        const minutes = program.length ? Math.round(program.reduce((total, day) => total + estimateSessionMinutes({ ...day, exercises: day.exercises.map((ex, i) => ({ ...ex, target: `${getWeekSetPlan(day.exercises, answers.goal, week, answers)[i]}x${ex.target.split('x').slice(1).join('x')}` })) }, answers), 0) / program.length) : 0;
-                        const multiplier = Math.round(getVolumeMultiplier(answers.goal, week) * 100);
-                        return React.createElement("div", { key: week, className: `mc-eight-week-row ${week === coachStatus.week ? 'active' : ''}` },
-                            React.createElement("span", { className: "week" }, `S${week}`),
-                            React.createElement("div", { className: "bar" }, React.createElement("span", { style: { width: `${multiplier}%` } })),
-                            React.createElement("span", { className: "details" }, `${sets} séries · ${minutes} min`));
-                    })),
                         " kcal \u00B7 Saisie manuelle (via une appli de suivi nutritionnel ou une estimation) \u2014 pas de calcul automatique des aliments.")),
                 React.createElement("div", { className: "grid grid-cols-2 gap-2" },
                     React.createElement("button", { onClick: exportAllData, className: "py-3 rounded-lg uppercase flex items-center justify-center gap-2", style: { background: "transparent", border: `1px solid ${colors.border}`, color: colors.muted, fontFamily: displayFont, fontSize: 12 } },
