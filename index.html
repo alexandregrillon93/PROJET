@@ -4283,6 +4283,25 @@ function ProgramBuilder() {
             window.storage?.set(key, JSON.stringify(payload), false);
         } catch (e) { console.warn("session autosave failed", e); }
     }, [selectedDayIndex]);
+    // Stats must reflect a series validated mid-workout, not only once "Terminer la
+    // séance" is pressed. This keeps the training-log/stats journal in sync in real time
+    // so leaving the app before finishing never makes the session look like it never happened.
+    useEffect(() => {
+        const exercises = dayData?.current?.exercises;
+        if (mode !== "track" || editingPrevious || !exercises) return;
+        const hasData = Object.values(exercises).some(sets => (sets || []).some(set => String(set?.weight ?? "").trim() !== "" || String(set?.reps ?? "").trim() !== ""));
+        if (!hasData) return;
+        const timer = setTimeout(() => {
+            const exerciseMeta = Object.fromEntries((activeDay?.exercises || []).map((ex) => [
+                ex.id,
+                { name: ex.name, category: ex.category, portion: ex.portion || classifyPortion(ex.category, ex.subgroup || "", ex.name || "") || null, isTime: !!ex.isTime, isBodyweight: !!ex.isBodyweight }
+            ]));
+            const snapshot = { date: dayData.current.date || new Date().toISOString(), exercises: JSON.parse(JSON.stringify(exercises)), exerciseMeta, rpe: currentRPE };
+            upsertCompletedSessionRecord(selectedDayIndex, snapshot, currentDay?.title || "").catch(e => console.warn("live stats sync failed", e));
+        }, 800);
+        return () => clearTimeout(timer);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [mode, editingPrevious, dayData?.current?.exercises, selectedDayIndex]);
     useEffect(() => {
         if (!restTimer)
             return;
