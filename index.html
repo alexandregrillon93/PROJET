@@ -3342,12 +3342,32 @@ function ProgramBuilder() {
             if (!Array.isArray(statsJournal)) statsJournal = [];
             // Merge the durable statistics journal with the activity log. The journal
             // is authoritative when it contains a full session payload.
-            const mergedLog = [...trainLog];
-            statsJournal.forEach(item => {
-                const key = `${item.date}|${item.dayIndex}|${item.session?.date || ""}`;
-                const exists = mergedLog.some(e => `${e.date}|${e.dayIndex}|${e.session?.date || ""}` === key);
-                if (!exists) mergedLog.push(item);
+            // ONE canonical session per local day + programmed day.
+            // Older versions could keep two copies (training-log + stats journal),
+            // or keep a log entry without its actual session payload. Prefer the
+            // record that contains the complete payload, then the newest record.
+            const sessionQuality = (entry) => {
+                const sets = entry?.session?.exercises;
+                const hasPayload = !!(entry?.session && sets && typeof sets === "object");
+                const setCount = hasPayload ? Object.values(sets).reduce((n, rows) => n + (Array.isArray(rows) ? rows.length : 0), 0) : 0;
+                const stamp = new Date(entry?.session?.date || entry?.updatedAt || entry?.date || 0).getTime();
+                return { hasPayload, setCount, stamp: Number.isFinite(stamp) ? stamp : 0 };
+            };
+            const canonicalByKey = new Map();
+            [...trainLog, ...statsJournal].forEach(item => {
+                if (!item || item.status !== "completed") return;
+                const dateKey = String(item.date || localDateKey(item.session?.date || new Date()));
+                const key = `${dateKey}|${String(item.dayIndex)}`;
+                const previous = canonicalByKey.get(key);
+                if (!previous) { canonicalByKey.set(key, item); return; }
+                const a = sessionQuality(previous), b = sessionQuality(item);
+                if ((b.hasPayload && !a.hasPayload) ||
+                    (b.hasPayload === a.hasPayload && b.setCount > a.setCount) ||
+                    (b.hasPayload === a.hasPayload && b.setCount === a.setCount && b.stamp >= a.stamp)) {
+                    canonicalByKey.set(key, item);
+                }
             });
+            const mergedLog = [...canonicalByKey.values()];
             setTrainingLog(mergedLog);
             const completedEntries = mergedLog.filter(e => e?.status === "completed");
 
@@ -3389,8 +3409,10 @@ function ProgramBuilder() {
                 else { canonicalKeys.add(key); canonical.push(item); }
             }
 
-            // Recover legacy completed sessions from custom-session histories only when the
-            // corresponding canonical training-log slot is missing.
+            // Recover legacy completed sessions from custom-session histories.
+            // IMPORTANT: recovery is also allowed to replace a malformed log entry
+            // that has no payload; otherwise Stats could show 0 even though the
+            // workout is visibly saved in the session history.
             if (program) {
                 for (let i = 0; i < program.length; i++) {
                     const saved = await readJson(`custom-session:${i}`, null);
@@ -3398,9 +3420,17 @@ function ProgramBuilder() {
                         const date = validDate(sess?.date);
                         if (!date) continue;
                         const key = `${localDateKey(date)}|${i}`;
-                        if (canonicalKeys.has(key)) continue;
-                        canonicalKeys.add(key);
-                        canonical.push({ date: localDateKey(date), dateObj: date, dayIndex: i, dayTitle: program[i]?.title || `Séance ${i + 1}`, status: "completed", session: sess, exercises: sess.exercises || {}, exerciseMeta: sess.exerciseMeta || {} });
+                        const recovered = { date: localDateKey(date), dateObj: date, dayIndex: i, dayTitle: program[i]?.title || `Séance ${i + 1}`, status: "completed", session: sess, exercises: sess.exercises || {}, exerciseMeta: sess.exerciseMeta || {} };
+                        const existingIndex = canonical.findIndex(x => `${x.dateKey}|${x.dayIndex}` === key);
+                        if (existingIndex < 0) {
+                            canonicalKeys.add(key);
+                            canonical.push(recovered);
+                        } else {
+                            const existing = canonical[existingIndex];
+                            const existingSets = Object.values(existing.exercises || {}).reduce((n, rows) => n + (Array.isArray(rows) ? rows.length : 0), 0);
+                            const recoveredSets = Object.values(recovered.exercises || {}).reduce((n, rows) => n + (Array.isArray(rows) ? rows.length : 0), 0);
+                            if (recoveredSets > existingSets || !existing.session) canonical[existingIndex] = recovered;
+                        }
                     }
                 }
             }
@@ -3446,8 +3476,14 @@ function ProgramBuilder() {
                             weeklyExercises.add(exId);
                             if (weighted) weeklyWeightedSets += 1;
                             const statTargets = getStatMuscleTargets(info);
+                            // A set belongs to ONE primary muscle for volume/accounting.
+                            // Secondary muscles (e.g. traps on face pulls/rows) are kept
+                            // for anatomical coverage but must not multiply total volume.
+                            const primaryTarget = statTargets.find(t => t.primary) || statTargets[0];
+                            if (primaryTarget) {
+                                setsByCategory[primaryTarget.category] = (setsByCategory[primaryTarget.category] || 0) + 1;
+                            }
                             statTargets.forEach(target => {
-                                setsByCategory[target.category] = (setsByCategory[target.category] || 0) + 1;
                                 setsByPortion[target.category] ||= {};
                                 setsByPortion[target.category][target.portion] = (setsByPortion[target.category][target.portion] || 0) + 1;
                             });
@@ -3456,9 +3492,8 @@ function ProgramBuilder() {
                             const v = w * r;
                             if (inWeek && !info.isRenforcement && info.category !== RENFORCEMENT_CATEGORY) {
                                 weeklyVolume += v; sessionVolume += v;
-                                getStatMuscleTargets(info).forEach(target => {
-                                    volByCategory[target.category] = (volByCategory[target.category] || 0) + v;
-                                });
+                                const primaryTarget = getStatMuscleTargets(info).find(t => t.primary) || getStatMuscleTargets(info)[0];
+                                if (primaryTarget) volByCategory[primaryTarget.category] = (volByCategory[primaryTarget.category] || 0) + v;
                             }
                             if (inPreviousWeek && !info.isRenforcement && info.category !== RENFORCEMENT_CATEGORY) previousWeekVolume += v;
                             if (!info.isTime && !info.isBodyweight && !info.isRenforcement && info.category !== RENFORCEMENT_CATEGORY) {
@@ -3477,9 +3512,8 @@ function ProgramBuilder() {
                                 const currentReps = parseFloat(current?.reps) || 0;
                                 const weight = parseFloat(set?.weight) || 0;
                                 const reps = parseFloat(set?.reps) || 0;
-                                const currentScore = isWeighted(info) ? estimate1RM(currentWeight, currentReps) : currentReps;
-                                const score = isWeighted(info) ? estimate1RM(weight, reps) : reps;
-                                return score > currentScore ? set : current;
+                                if (!isWeighted(info)) return reps > currentReps ? set : current;
+                                return weight > currentWeight || (weight === currentWeight && reps > currentReps) ? set : current;
                             }, performed[0]);
                             const weight = parseFloat(best?.weight) || 0;
                             const reps = parseFloat(best?.reps) || 0;
@@ -3577,7 +3611,7 @@ function ProgramBuilder() {
             setDashboardData({
                 weeklyVolume: Math.round(weeklyVolume), previousWeekVolume: Math.round(previousWeekVolume), volumeDeltaPct,
                 weeklySets, weeklyReps: Math.round(weeklyReps), weeklyExercises: weeklyExercises.size, weeklyWeightedSets,
-                averageSessionVolume: totalSessionsThisWeek ? Math.round(weeklyVolume / totalSessionsThisWeek) : 0,
+                averageSessionVolume: sessionsThisWeek ? Math.round(weeklyVolume / sessionsThisWeek) : 0,
                 sessionsThisWeek, sessionsPreviousWeek, totalSessionsThisWeek, freestyleSessionsThisWeek,
                 plannedSessions, adherence, prs, volumeByCategory, volumeByPortion, reinforcementSets,
                 programCoverage: programCoverageRows, programCoverageScore: getPortionCoverageScore(program || []),
@@ -4138,6 +4172,38 @@ function ProgramBuilder() {
         window.addEventListener("beforeunload", warnBeforeLeaving);
         return () => window.removeEventListener("beforeunload", warnBeforeLeaving);
     }, [mode, dayData]);
+    async function upsertCompletedSessionRecord(dayIndex, session, dayTitle = "") {
+        if (!session?.date || dayIndex == null) return [];
+        const dateKey = localDateKey(session.date);
+        const makeEntry = () => ({
+            date: dateKey,
+            dayIndex,
+            dayTitle: dayTitle || program?.[dayIndex]?.title || `Séance ${Number(dayIndex) + 1}`,
+            status: "completed",
+            sessionId: `${dateKey}:${dayIndex}:${session.date}`,
+            session
+        });
+        let log = [];
+        try {
+            const stored = await window.storage?.get("training-log", false);
+            if (stored?.value) log = JSON.parse(stored.value) || [];
+        } catch (_) {}
+        if (!Array.isArray(log)) log = [];
+        const next = [...log.filter(e => !(e?.date === dateKey && String(e?.dayIndex) === String(dayIndex))), makeEntry()].slice(-120);
+        await window.storage?.set("training-log", JSON.stringify(next), false);
+        // Keep the recovery journal in sync too. This is essential when a user edits
+        // an already completed session: Stats must immediately see the new weights/reps.
+        try {
+            const jr = await window.storage?.get("stats-session-log", false);
+            let journal = jr?.value ? JSON.parse(jr.value) : [];
+            if (!Array.isArray(journal)) journal = [];
+            const entry = makeEntry();
+            const nextJournal = [...journal.filter(e => !(e?.date === dateKey && String(e?.dayIndex) === String(dayIndex))), entry].slice(-240);
+            await window.storage?.set("stats-session-log", JSON.stringify(nextJournal), false);
+        } catch (_) {}
+        setTrainingLog(next);
+        return next;
+    }
     async function addLogEntry(status, completedSession = null) {
         // Canonical source for Home + Stats + evolution. Always read the latest
         // persisted log first: relying only on React state could reintroduce an
@@ -4428,7 +4494,10 @@ function ProgramBuilder() {
             setDayData(nextData);
             try {
                 if (window.storage) await window.storage.set(`custom-session:${selectedDayIndex}`, JSON.stringify(nextData), false);
-            } catch (e) { console.warn("session history save failed", e); }
+                // Editing is an UPDATE, never a new session. Replace the exact
+                // local-date + day slot in both canonical stats stores.
+                await upsertCompletedSessionRecord(selectedDayIndex, updated, currentDay?.title || "");
+            } catch (e) { console.warn("session history/log update failed", e); }
             setEditingPrevious(false);
             setCurrentRPE(null);
             return;
