@@ -16,7 +16,7 @@
 <body>
 <h1>Tests de non-régression</h1>
 <ul id="results"></ul>
-<iframe id="app" src="../index.html?tests=1"></iframe>
+<iframe id="app" src="./index.html?tests=1"></iframe>
 <script>
 (async () => {
   const results = document.querySelector('#results');
@@ -40,7 +40,7 @@
     report('programme de test disponible', false, 'génère un programme avant de lancer les tests');
     return;
   }
-  const base = { app: 'Muscu Coach Pro', version: 18, customProgram: snapshot, sessions: {}, trainingLog: [], bodyweightLog: [], calorieLog: [], freestyleLog: [], cycleFeedback: [] };
+  const base = { app: 'Muscu Coach Pro', version: 20, customProgram: snapshot, sessions: {}, trainingLog: [], bodyweightLog: [], calorieLog: [], freestyleLog: [], cycleFeedback: [] };
   report('sauvegarde valide acceptée', app.validateImportBundle(base).ok);
   report('version future refusée', !app.validateImportBundle({ ...base, version: 999 }).ok);
   report('liste invalide refusée', !app.validateImportBundle({ ...base, trainingLog: {} }).ok);

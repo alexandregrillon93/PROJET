@@ -1,4 +1,4 @@
-const APP_DATA_VERSION = 18;
+const APP_DATA_VERSION = 20;
 function validateImportBundle(bundle) {
     if (!bundle || typeof bundle !== "object") return { ok: false, message: "Le fichier n'est pas un objet JSON." };
     if (bundle.app && bundle.app !== "Muscu Coach Pro") return { ok: false, message: "Ce fichier ne vient pas de Muscu Coach Pro." };
