@@ -2196,12 +2196,20 @@ function cycleWeekRange(startDateIso, weekIndex = 1) {
 }
 function weeklyProgramStatus(program, trainingLog) {
     const { monday, sunday } = currentWeekRange();
+    const mondayKey = localDateKey(monday);
+    const sundayKey = localDateKey(sunday);
     return program.map((day, i) => {
         const entries = trainingLog.filter((e) => {
-            if (e.dayIndex !== i)
+            if (String(e.dayIndex) !== String(i))
                 return false;
-            const d = new Date(e.date);
-            return d >= monday && d <= sunday;
+            const rawDate = String(e.date || e.session?.date || "");
+            if (!rawDate)
+                return false;
+            const parsedDate = /^\d{4}-\d{2}-\d{2}$/.test(rawDate) ? null : new Date(rawDate);
+            if (parsedDate && Number.isNaN(parsedDate.getTime()))
+                return false;
+            const dateKey = parsedDate ? localDateKey(parsedDate) : rawDate;
+            return dateKey >= mondayKey && dateKey <= sundayKey;
         });
         let status = "todo";
         if (entries.some((e) => e.status === "completed"))
@@ -2957,7 +2965,14 @@ function ProgramBuilder() {
         try {
             const keys = await window.storage.list("custom-session:");
             for (const key of (keys?.keys || [])) await window.storage.delete(key);
-            await Promise.all(["training-log", "stats-session-log", "freestyle-log"].map(key => window.storage.set(key, "[]", false)));
+            const logKeys = ["training-log", "stats-session-log", "session-store", "freestyle-log"];
+            await Promise.all(logKeys.map(key => window.storage.set(key, "[]", false)));
+            const clearedLogs = await Promise.all(logKeys.map(async key => {
+                const saved = await window.storage.get(key, false);
+                return saved?.value ? JSON.parse(saved.value) : [];
+            }));
+            if (clearedLogs.some(log => !Array.isArray(log) || log.length > 0))
+                throw new Error("Les journaux de séances n'ont pas tous été vidés.");
             setTrainingLog([]);
             setDashboardData(null);
             setImportFlash("Statistiques et séances effacées. Le programme est conservé.");
