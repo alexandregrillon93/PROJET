@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="theme-color" content="#181B18">
+<meta name="theme-color" content="#071522">
 <link rel="manifest" href="./manifest.json">
 <link rel="apple-touch-icon" href="./icon-192.png">
 <link rel="icon" href="./icon-192.png">
@@ -18,6 +18,7 @@
 <style>
   html, body { margin: 0; padding: 0; background: #181B18; }
   #root { min-height: 100vh; }
+  .mc-shell { padding-top: env(safe-area-inset-top); }
   @keyframes mcPulse { 0%,100%{transform:scale(1);opacity:.82} 50%{transform:scale(1.04);opacity:1} }
   @keyframes mcShine { 0%{transform:translateX(-120%)} 55%,100%{transform:translateX(120%)} }
   @keyframes mcFadeUp { from{opacity:0;transform:translateY(18px)} to{opacity:1;transform:translateY(0)} }
@@ -227,13 +228,16 @@
 .mc-v12-btn{border:1px solid #1D405B;background:#0B1C2B;color:#CFE6F2;border-radius:10px;padding:9px 10px;font-size:10px}
 .mc-v12-btn.active{border-color:#12B8FF;background:rgba(18,184,255,.13);color:#fff}
 .mc-v12-modal{position:fixed;inset:0;z-index:10020;background:rgba(2,8,13,.78);backdrop-filter:blur(8px);display:flex;align-items:flex-end;justify-content:center}
-.mc-v12-sheet{width:min(100%,520px);max-height:88vh;overflow:auto;background:#071522;border:1px solid #1D405B;border-radius:24px 24px 0 0;padding:18px;box-shadow:0 -20px 60px rgba(0,0,0,.45)}
+.mc-v12-sheet{width:min(100%,520px);max-height:88vh;overflow:auto;background:#071522;border:1px solid #1D405B;border-radius:24px 24px 0 0;padding:18px 18px calc(18px + env(safe-area-inset-bottom));box-shadow:0 -20px 60px rgba(0,0,0,.45)}
 .mc-v12-bar{height:8px;background:#0D2233;border-radius:999px;overflow:hidden}.mc-v12-bar>span{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,#087CFF,#12B8FF,#27D89B)}
 @media(max-width:360px){.mc-v12-grid{grid-template-columns:1fr}}
 @media(max-width:380px){
-    .mc-bottom-nav{left:6px;right:6px;gap:2px;padding:5px}
+    .mc-bottom-nav{left:calc(6px + env(safe-area-inset-left));right:calc(6px + env(safe-area-inset-right));gap:2px;padding:5px}
     .mc-bottom-nav button{font-size:7px;padding-left:1px;padding-right:1px}
     .mc-bottom-nav .nav-icon{font-size:15px}
+}
+@media(max-width:699px){
+  .mc-shell input:not([type="checkbox"]):not([type="radio"]),.mc-shell select,.mc-shell textarea{font-size:16px!important}
 }
 
 .mc-light .mc-v12-card,.mc-light .mc-glass{background:#ffffff !important;border-color:#D6E3EC !important;color:#102334 !important;box-shadow:0 8px 30px rgba(16,35,52,.06)}
@@ -4603,7 +4607,7 @@ function ProgramBuilder() {
         .mc-section-title { font-family:${displayFont}; text-transform:uppercase; letter-spacing:.08em; font-size:12px; color:#C8D9E6; }
         .mc-progress-track { height:8px; border-radius:999px; background:#102334; overflow:hidden; border:1px solid #1D405B; }
         .mc-progress-fill { height:100%; border-radius:999px; background:linear-gradient(90deg,#087CFF,#12B8FF,#27D89B); box-shadow:0 0 16px rgba(18,184,255,.35); }
-        .mc-bottom-nav { position:fixed; left:10px; right:10px; bottom:10px; z-index:45; display:grid; grid-template-columns:repeat(5,1fr); grid-auto-rows:46px; gap:4px; padding:7px; border-radius:18px; background:rgba(5,15,24,.94); border:1px solid rgba(49,133,181,.35); backdrop-filter:blur(18px); box-shadow:0 16px 40px rgba(0,0,0,.4); }
+        .mc-bottom-nav { position:fixed; left:calc(10px + env(safe-area-inset-left)); right:calc(10px + env(safe-area-inset-right)); bottom:calc(10px + env(safe-area-inset-bottom)); z-index:45; display:grid; grid-template-columns:repeat(5,1fr); grid-auto-rows:46px; gap:4px; padding:7px; border-radius:18px; background:rgba(5,15,24,.94); border:1px solid rgba(49,133,181,.35); backdrop-filter:blur(18px); box-shadow:0 16px 40px rgba(0,0,0,.4); }
         .mc-bottom-nav button { border:0; background:transparent; color:#6E899E; border-radius:12px; padding:5px 2px; font-size:8px; }
         .mc-bottom-nav button.active { color:#fff; background:rgba(18,184,255,.13); box-shadow:inset 0 0 0 1px rgba(18,184,255,.25); }
         .mc-bottom-nav .nav-icon { display:block; font-size:17px; line-height:18px; margin-bottom:2px; }
