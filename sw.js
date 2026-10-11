@@ -1,4 +1,4 @@
-const CACHE='muscu-coach-pro-v17';
+const CACHE='muscu-coach-pro-v18';
 const APP_SHELL=['./','./index.html','./manifest.json','./icon-192.png','./icon-512.png','./react.production.min.js','./react-dom.production.min.js','./tailwindcss.js','./data-validation.js'];
 
 self.addEventListener('install', event => {

@@ -4522,7 +4522,11 @@ function ProgramBuilder() {
         setDayData((prev) => {
             const nextExercises = { ...prev.current.exercises };
             const arr = getExSets(ex.id).slice();
-            arr[idx] = { ...arr[idx], done: willBeDone };
+            // The grey rep number is only a placeholder: without a typed value the set
+            // would be "done" but ignored by Stats. Use the suggested reps on validation.
+            const hasReps = parseFloat(arr[idx]?.reps) > 0;
+            const reps = willBeDone && !hasReps ? String(parseRepRange(ex.target).min) : arr[idx]?.reps;
+            arr[idx] = { ...arr[idx], reps, done: willBeDone };
             nextExercises[ex.id] = arr;
             const nextData = {
                 ...prev,
