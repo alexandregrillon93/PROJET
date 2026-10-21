@@ -1530,6 +1530,42 @@ function getPortionStats(program) {
     return stats;
 }
 
+function getTwoWeekPortionCoverage(program, answers, firstWeek = 1) {
+    const categories = new Set();
+    (program || []).forEach(day => (day.exercises || []).forEach(ex => {
+        if (ex.isRenforcement) return;
+        getStatMuscleTargets(ex).forEach(({ category }) => {
+            if (PORTION_REQUIREMENTS[category]) categories.add(category);
+        });
+    }));
+    const stats = {};
+    [firstWeek, firstWeek + 1].forEach(week => {
+        (program || []).forEach((day, dayIndex) => {
+            const exercises = rotateAccessoryExercises(day, answers, week, dayIndex, program);
+            const plannedSets = getDurationSafeSetPlan({ ...day, exercises }, answers, week);
+            exercises.forEach((ex, exerciseIndex) => {
+                if (ex.isRenforcement) return;
+                const sets = plannedSets[exerciseIndex] || 0;
+                getStatMuscleTargets(ex).forEach(({ category, portion }) => {
+                    if (!categories.has(category) || !PORTION_REQUIREMENTS[category]?.includes(portion)) return;
+                    stats[category] ||= {};
+                    stats[category][portion] ||= { sets: 0, weeks: [] };
+                    stats[category][portion].sets += sets;
+                    if (!stats[category][portion].weeks.includes(week)) stats[category][portion].weeks.push(week);
+                });
+            });
+        });
+    });
+    const rows = [...categories].flatMap(category => PORTION_REQUIREMENTS[category].map(portion => ({
+        category,
+        portion,
+        sets: stats[category]?.[portion]?.sets || 0,
+        weeks: stats[category]?.[portion]?.weeks || [],
+    })));
+    const covered = rows.filter(row => row.sets > 0).length;
+    return { rows, score: rows.length ? Math.round(covered / rows.length * 100) : 0 };
+}
+
 function getPortionCoverageScore(program) {
     const stats = getPortionStats(program);
     let covered = 0, total = 0;
@@ -3478,6 +3514,7 @@ function ProgramBuilder() {
                 : todayStart;
             const elapsedDays = Number.isNaN(programAnchor.getTime()) ? 0 : Math.floor((Date.now() - programAnchor.getTime()) / 86400000);
             const cycleWeek = Math.min(CYCLE_WEEKS, Math.max(1, Math.floor(elapsedDays / 7) + 1));
+            const rotationWeek = Math.max(1, Math.floor(elapsedDays / 7) + 1);
             const { monday, sunday } = cycleWeekRange(programAnchor, cycleWeek);
             const previousMonday = new Date(monday); previousMonday.setDate(previousMonday.getDate() - 7);
             const previousSunday = new Date(sunday); previousSunday.setDate(previousSunday.getDate() - 7);
@@ -3730,9 +3767,9 @@ function ProgramBuilder() {
             const prs = Object.values(prMap).sort((a,b) => b.weight - a.weight || b.e1rm - a.e1rm);
             const volumeByCategory = Object.entries(setsByCategory).map(([category, sets]) => ({ category, sets, volume: Math.round(volByCategory[category] || 0) })).sort((a,b) => b.volume - a.volume || b.sets - a.sets);
             const volumeByPortion = Object.entries(setsByPortion).flatMap(([category, portions]) => Object.entries(portions).map(([portion, sets]) => ({ category, portion, sets }))).sort((a,b) => b.sets - a.sets);
-            const programCoverage = getPortionStats(program || []);
-            const programCoverageRows = Object.entries(programCoverage).flatMap(([category, portions]) => (PORTION_REQUIREMENTS[category] || Object.keys(portions)).map(portion => ({ category, portion, sets: portions[portion] || 0 })));
-            const requiredPortions = Object.entries(programCoverage).flatMap(([category, portions]) => (PORTION_REQUIREMENTS[category] || Object.keys(portions)).map(portion => ({ category, portion })));
+            const portionCoverage = getTwoWeekPortionCoverage(program || [], answers, rotationWeek);
+            const programCoverageRows = portionCoverage.rows;
+            const requiredPortions = programCoverageRows.map(({ category, portion }) => ({ category, portion }));
             const realizedCoverageScore = requiredPortions.length ? Math.round(requiredPortions.reduce((sum, p) => sum + ((setsByPortion[p.category]?.[p.portion] || 0) >= 2 ? 1 : (setsByPortion[p.category]?.[p.portion] || 0) > 0 ? 0.5 : 0), 0) / requiredPortions.length * 100) : 0;
             const volumeDeltaPct = previousWeekVolume > 0 ? Math.round(((weeklyVolume - previousWeekVolume) / previousWeekVolume) * 100) : null;
             const today = new Date();
@@ -3780,7 +3817,7 @@ function ProgramBuilder() {
                 averageSessionVolume: sessionsThisWeek ? Math.round(weeklyVolume / sessionsThisWeek) : 0,
                 sessionsThisWeek, sessionsPreviousWeek, totalSessionsThisWeek, freestyleSessionsThisWeek,
                 plannedSessions, adherence, prs, volumeByCategory, volumeByPortion, reinforcementSets,
-                programCoverage: programCoverageRows, programCoverageScore: getPortionCoverageScore(program || []),
+                programCoverage: programCoverageRows, programCoverageScore: portionCoverage.score, programCoverageWeeks: [rotationWeek, rotationWeek + 1],
                 realizedCoverageScore, bodyweightLog: Array.isArray(bwLog) ? bwLog : [], calorieLog: Array.isArray(kcalLog) ? kcalLog : [],
                 neglected, sessionVolumes: sessionVolumes.slice(-8), exerciseProgress, weeklyHistory,
                 history: canonical.flatMap(e => Object.entries(e.exercises || {}).map(([exId, sets]) => ({ exId, sets, date: e.dateKey, ...(e.exerciseMeta?.[exId] || idToInfo[exId] || {}) }))),
@@ -3851,15 +3888,11 @@ function ProgramBuilder() {
     }
     async function exportAllData() {
         try {
-            if (!window.storage)
-                return;
-            const readJson = async (key, fallback) => { try {
+            if (!window.storage) throw new Error("Stockage indisponible sur cet appareil.");
+            const readJson = async (key, fallback) => {
                 const r = await window.storage.get(key, false);
                 return r?.value ? JSON.parse(r.value) : fallback;
-            }
-            catch (e) {
-                return fallback;
-            } };
+            };
             const bundle = { app: "Muscu Coach Pro", version: APP_DATA_VERSION, appVersion: MC_APP_VERSION, exportedAt: new Date().toISOString(), customProgram: await readJson("custom-program", null), sessions: {}, sessionStore: await readJson("session-store", []), statsSessionLog: await readJson("stats-session-log", []), trainingLog: await readJson("training-log", []), bodyweightLog: await readJson("bodyweight-log", []), calorieLog: await readJson("calorie-log", []), freestyleLog: await readJson("freestyle-log", []), cycleFeedback: await readJson("cycle-feedback", []), nutritionProfile: await readJson("nutrition-profile", null), recoveryToday: await readJson("recovery-today", null), mealVariants: await readJson("meal-variants", {}) };
             const count = bundle.customProgram?.program?.length || program?.length || 0;
             for (let i = 0; i < count; i++)
@@ -3872,16 +3905,21 @@ function ProgramBuilder() {
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
-            URL.revokeObjectURL(url);
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+            setImportFlash("Sauvegarde téléchargée. Garde le fichier dans un endroit sûr.");
+            setTimeout(() => setImportFlash(null), 5000);
         }
         catch (e) {
-            setImportFlash("Impossible de créer la sauvegarde.");
+            setImportFlash(`Sauvegarde impossible : ${e?.message || "erreur de lecture des données."}`);
+            setTimeout(() => setImportFlash(null), 5000);
         }
     }
     async function importAllData(event) {
         const file = event.target.files?.[0];
         event.target.value = "";
         if (!file)
+            return;
+        if (!window.confirm("Restaurer cette sauvegarde remplacera le programme et les données actuelles sur cet appareil. Continuer ?"))
             return;
         try {
             const bundle = JSON.parse(await file.text());
@@ -5365,9 +5403,10 @@ function ProgramBuilder() {
                 })()),
                 React.createElement("div", { style: { background: colors.surface, border: `1px solid ${colors.border}` }, className: "rounded-lg p-4" },
                     React.createElement("div", { className: "flex items-center justify-between mb-2" },
-                        React.createElement("div", { style: { fontFamily: displayFont, fontSize: 12, color: colors.faint, letterSpacing: "0.03em" }, className: "uppercase" }, "Couverture anatomique prévue"),
+                        React.createElement("div", { style: { fontFamily: displayFont, fontSize: 12, color: colors.faint, letterSpacing: "0.03em" }, className: "uppercase" }, "Couverture prévue sur 2 semaines"),
                         React.createElement("span", { className: "mc-v12-pill" }, `${dashboardData?.programCoverageScore || 0}%`)),
-                    React.createElement("div", { style: { fontSize: 11, color: colors.muted, marginBottom: 10 } }, "Prévision du programme sur les portions anatomiques. Cette carte est indépendante des séries réellement réalisées."),
+                    React.createElement("div", { style: { fontSize: 11, color: colors.muted, marginBottom: 10 } },
+                        `Rotation incluse · semaines ${dashboardData?.programCoverageWeeks?.[0] || 1} et ${dashboardData?.programCoverageWeeks?.[1] || 2}. Prévision, distincte des séries réellement réalisées.`),
                     React.createElement("div", { className: "grid grid-cols-1 gap-2" },
                         Object.entries(PORTION_REQUIREMENTS).filter(([cat]) => (dashboardData?.programCoverage || []).some(v => v.category === cat)).map(([cat, required]) => {
                             const rows = (dashboardData?.programCoverage || []).filter(v => v.category === cat);
@@ -5379,7 +5418,8 @@ function ProgramBuilder() {
                                 React.createElement("div", { className: "flex flex-wrap gap-1" }, required.map(portion => {
                                     const row = rows.find(v => v.portion === portion);
                                     const sets = row?.sets || 0;
-                                    return React.createElement("span", { key: portion, className: "mc-chip", style: { color: sets > 0 ? colors.good : colors.faint, borderColor: sets > 0 ? `${colors.good}55` : colors.border } }, `${sets > 0 ? "✓" : "○"} ${portion} · ${sets}s`);
+                                    const weeks = row?.weeks?.map(week => `S${week}`).join("+") || "—";
+                                    return React.createElement("span", { key: portion, className: "mc-chip", style: { color: sets > 0 ? colors.good : colors.faint, borderColor: sets > 0 ? `${colors.good}55` : colors.border } }, `${sets > 0 ? "✓" : "○"} ${portion} · ${weeks} · ${sets}s`);
                                 }))
                             );
                         })
@@ -5828,8 +5868,11 @@ function ProgramBuilder() {
                 React.createElement("button", { onClick: editAnswers, className: "mc-v12-btn mt-3", style: { background: '#12B8FF', color: '#06101A', fontWeight: 800 } }, "\u270F\uFE0F MODIFIER MON PROFIL / PROGRAMME")),
             React.createElement("div", { className: "mc-v12-card" },
                 React.createElement("div", { className: "mc-section-title" }, "Sauvegarde"),
-                React.createElement("div", { className: "mc-v12-muted mt-1" }, "Tes donn\u00E9es d'entra\u00EEnement, nutrition et r\u00E9cup\u00E9ration sont exportables."),
-                React.createElement("button", { onClick: exportAllData, className: "mc-v12-btn mt-3" }, "\uD83D\uDCBE Exporter mes donn\u00E9es")))),
+                React.createElement("div", { className: "mc-v12-muted mt-1" }, "Tes données restent sur cet appareil. Exporte régulièrement une sauvegarde JSON pour éviter de les perdre ou les transférer vers un autre téléphone."),
+                React.createElement("div", { className: "flex gap-2 mt-3" },
+                    React.createElement("button", { onClick: exportAllData, className: "mc-v12-btn", style: { flex: 1 } }, "\uD83D\uDCBE Exporter"),
+                    React.createElement("button", { onClick: () => importInputRef.current?.click(), className: "mc-v12-btn", style: { flex: 1 } }, "\u2B06\uFE0F Restaurer")),
+                importFlash && React.createElement("div", { className: "mc-v12-muted mt-2", role: "status" }, importFlash)))),
         mode === "cycleReview" && (React.createElement("div", { className: "px-4 py-6 flex flex-col gap-4" }, reviewLoading ? (React.createElement("div", { className: "py-10 text-center", style: { color: colors.muted } }, "Analyse de ton cycle\u2026")) : (React.createElement(React.Fragment, null,
             React.createElement("div", { style: { color: colors.muted, fontSize: 13 } },
                 CYCLE_WEEKS,
@@ -6113,7 +6156,7 @@ function ProgramBuilder() {
                         React.createElement("div", { style: { fontFamily: dataFont, fontSize: 11, color: colors.good, textAlign: "right" } },
                             Math.round(getVolumeMultiplier(answers.goal, weekNumber(programStartDate)) * 100),
                             "% du volume de base")),
-                    React.createElement("div", { style: { fontSize: 10, color: colors.faint, marginTop: 5 } }, "Les fourchettes de r\u00E9p\u00E9titions restent fixes. Le nombre de s\u00E9ries augmente progressivement, puis redescend en semaine 8 pour r\u00E9cup\u00E9rer.")),
+                    React.createElement("div", { style: { fontSize: 10, color: colors.faint, marginTop: 5 } }, "Les séries sont calculées par exercice selon la progression, puis ajustées à la durée choisie. Hors deload, un exercice prévu à plusieurs séries garde au moins 2 séries ; les accessoires programmés à 1 série restent l’exception.")),
                 React.createElement("div", { className: "rounded p-2 mt-1", style: { background: recoveryModifier(todayRecovery).tone === 'warn' ? '#FFB06E12' : '#12B8FF12', border: `1px solid ${recoveryModifier(todayRecovery).tone === 'warn' ? '#FFB06E55' : '#12B8FF55'}` } },
                     React.createElement("div", { className: "flex items-center justify-between" },
                         React.createElement("span", { style: { fontFamily: displayFont, fontSize: 10, color: colors.muted } }, "ADAPTATION DU JOUR"),

@@ -14,3 +14,8 @@ Le workflow `.github/workflows/deploy.yml` publie le site statique à chaque pus
 - **Android** : ouvre le site dans Chrome, puis choisis **Installer l’application** ou **Ajouter à l’écran d’accueil**.
 
 Les données sont conservées dans le navigateur de l’appareil. Pour les transférer d’un appareil à l’autre, utilise les fonctions d’export et d’import de l’application.
+
+## Suivi et sauvegardes
+
+- Le tableau de bord estime la couverture des portions musculaires sur les deux semaines à venir, rotation des exercices incluse. Cette prévision ne remplace pas le suivi des séances réellement terminées.
+- Exporte régulièrement une sauvegarde JSON depuis **Profil** ou **Stats**. La restauration remplace les données présentes sur l’appareil et demande une confirmation.

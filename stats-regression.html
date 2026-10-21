@@ -79,6 +79,8 @@
   const chestWeekTwo = app.rotateAccessoryExercises(chestRotationProgram[0], rotationAnswers, 2, 0, chestRotationProgram);
   report('portion pectorale oubliée ajoutée en semaine 2 sans changer le mouvement principal', chestWeekTwo[0].name === chestWeekOne[0].name && chestWeekTwo[1].name !== chestWeekOne[1].name && chestWeekTwo[1].portion === 'Bas des pectoraux');
   report('couverture pectorale complète sur deux semaines avec un seul accessoire tournant', new Set([...chestWeekOne, ...chestWeekTwo].map(ex => ex.portion)).size === 3);
+  const chestCoverage = app.getTwoWeekPortionCoverage(chestRotationProgram, rotationAnswers, 1);
+  report('bilan de couverture sur deux semaines inclut la rotation et les séries prévues', chestCoverage.rows.filter(row => row.category === 'Pectoraux').length === 3 && chestCoverage.rows.filter(row => row.category === 'Pectoraux').every(row => row.sets > 0 && row.weeks.length > 0) && chestCoverage.score === 100);
   const bicepsProgram = [{ exercises: [
     { name: 'Curl incliné haltères', category: 'Biceps', portion: 'Biceps — longue portion', target: '3x8-12', rest: 90 },
     { name: 'Curl pupitre (banc Scott)', category: 'Biceps', portion: 'Biceps — courte portion', target: '3x8-12', rest: 90 }
@@ -87,6 +89,13 @@
   report('rotation hebdomadaire des accessoires bras sans garder les variantes précédentes', rotatedBiceps.every((ex, index) => ex.name !== bicepsProgram[0].exercises[index].name) && new Set(rotatedBiceps.map(ex => ex.portion)).size === 2);
   const weeklyAnswers = { goal: 'recomposition', days: 4, duration: 'moyen', level: 'confirme', equip: 'full', renforcement: 'non', recovery: 'moyenne', preference: 'mix', training_style: 'classique', limitations: [], priority: [] };
   const weeklyProgram = app.generateProgram(weeklyAnswers);
+  const coverageAcrossFrequencies = [2, 3, 4, 5].every(days => {
+    const answers = { ...weeklyAnswers, days };
+    const program = app.generateProgram(answers);
+    const coverage = app.getTwoWeekPortionCoverage(program, answers, 3);
+    return coverage.score >= 0 && coverage.score <= 100 && coverage.rows.length > 0 && coverage.rows.every(row => Array.isArray(row.weeks) && row.weeks.every(week => week === 3 || week === 4));
+  });
+  report('prévision anatomique valide pour les programmes de 2 à 5 jours', coverageAcrossFrequencies);
   const plannedSetsPreserved = weeklyProgram.every(day => {
     const plan = app.getDurationSafeSetPlan(day, weeklyAnswers, 2);
     return day.exercises.every((ex, index) => parseInt(ex.target.split('x')[0], 10) <= 1 || plan[index] >= 2);
@@ -136,7 +145,7 @@
     report('accès aux statistiques', !!statsButton);
     statsButton.click();
     await new Promise(resolve => setTimeout(resolve, 900));
-    report('libellé des volumes explicite', app.document.body.textContent.includes('Volume attribué par groupe musculaire'));
+    report('libellé des volumes explicite', app.document.body.textContent.includes('Volume attribué par groupe musculaire') && app.document.body.textContent.includes('Couverture prévue sur 2 semaines'));
   } else {
     skip('interface des statistiques', 'aucun écran de programme actif dans le navigateur de test');
   }
