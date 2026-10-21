@@ -1326,12 +1326,14 @@ function getDurationSafeSetPlan(day, answers = {}, week = 1) {
     const maxMinutes = (DURATION_TARGETS[answers.duration] || [30,45])[1];
     const makeDay = arr => ({ ...day, exercises: exercises.map((ex,i)=>({ ...ex, target: `${Math.max(1,arr[i])}x${(ex.target.split('x')[1] || (answers.goal === 'force' ? '4-6' : '8-12')).trim()}` })) });
     let working = sets.slice();
+    // Preserve two sets for planned exercises; only explicit singles and deloads may stay at one.
+    const minimumSets = exercises.map(ex => week === CYCLE_WEEKS || parseSetCount(ex.target) <= 1 ? 1 : 2);
     const estimate = () => estimateSessionMinutes(makeDay(working), answers);
     let guard = 0;
     while (estimate() > maxMinutes && guard++ < 100) {
         let best = -1;
         for (let i=0;i<working.length;i++) {
-            if (working[i] <= 1) continue;
+            if (working[i] <= minimumSets[i]) continue;
             const ex = exercises[i];
             const score = (ex.isRenforcement ? 0 : 10) + (i === 0 ? 100 : 0) + working[i];
             if (best < 0 || score < ((exercises[best].isRenforcement ? 0 : 10) + (best === 0 ? 100 : 0) + working[best])) best=i;

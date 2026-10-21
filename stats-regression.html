@@ -52,6 +52,30 @@
   report('rotation trapèzes sans doublon entre les séances', firstRotated[0].name === 'Élévation en Y (Y-raise)' && secondRotated[0].name === 'Shrugs à la poulie basse');
   const manualDay = { ...rotationProgram[0], exercises: [{ ...rotationProgram[0].exercises[0], name: 'Shrugs haltères', manualSwap: true }] };
   report('choix manuel conservé malgré la rotation', app.rotateAccessoryExercises(manualDay, rotationAnswers, 2, 0, rotationProgram)[0].name === 'Shrugs haltères');
+  const weeklyAnswers = { goal: 'recomposition', days: 4, duration: 'moyen', level: 'confirme', equip: 'full', renforcement: 'non', recovery: 'moyenne', preference: 'mix', training_style: 'classique', limitations: [], priority: [] };
+  const weeklyProgram = app.generateProgram(weeklyAnswers);
+  const upperA = weeklyProgram.find(day => day.title.startsWith('Upper A'));
+  const upperAPlan = upperA ? app.getDurationSafeSetPlan(upperA, weeklyAnswers, 2) : [];
+  const armSetsPreserved = !!upperA && upperA.exercises.every((ex, index) =>
+    !['Biceps', 'Triceps'].includes(ex.category) || parseInt(ex.target.split('x')[0], 10) <= 1 || upperAPlan[index] >= 2
+  );
+  report('exercices bras planifiés gardent au moins deux séries hors deload', armSetsPreserved);
+  const explicitSingle = { exercises: [{ name: 'Élévation latérale', category: 'Épaules', target: '1x8-12', rest: 90 }] };
+  const deloadSingle = { exercises: [{ name: 'Curl incliné', category: 'Biceps', target: '2x8-12', rest: 90 }] };
+  report('série accessoire volontaire conservée', app.getDurationSafeSetPlan(explicitSingle, weeklyAnswers, 2)[0] === 1);
+  report('semaine de deload conserve sa réduction', app.getDurationSafeSetPlan(deloadSingle, weeklyAnswers, 8)[0] === 1);
+  const weeklyPortionRotation = Object.entries({
+    Pectoraux: 3, Dos: 3, Épaules: 3, Trapèzes: 3, Biceps: 3, Triceps: 3,
+    Jambes: 2, 'Ischios/Fessiers': 2, Mollets: 2, Core: 3,
+    'Avant-bras': 4, 'Adducteurs/Abducteurs': 3
+  }).every(([category, requiredCount]) => {
+    const portions = weeklyProgram.flatMap(day => day.exercises || [])
+      .filter(ex => ex.category === category && !ex.isRenforcement)
+      .map(ex => ex.portion)
+      .filter(Boolean);
+    return new Set(portions).size >= Math.min(portions.length, requiredCount);
+  });
+  report('portions anatomiques réparties sans doublon inutile sur la semaine', weeklyPortionRotation);
   const stored = await app.storage.get('custom-program');
   const snapshot = stored?.value ? JSON.parse(stored.value) : null;
   if (!snapshot) {
