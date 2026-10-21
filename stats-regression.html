@@ -69,6 +69,16 @@
   report('choix manuel conservé malgré la rotation', app.rotateAccessoryExercises(manualProgram[0], rotationAnswers, 2, 0, manualProgram)[0].name === 'Shrugs haltères');
   const anchorProgram = [{ exercises: [{ name: 'Développé incliné haltères', category: 'Pectoraux', portion: 'Haut des pectoraux', target: '4x8-12', rest: 90 }] }];
   report('mouvement principal stable pendant la rotation', app.rotateAccessoryExercises(anchorProgram[0], rotationAnswers, 2, 0, anchorProgram)[0].name === 'Développé incliné haltères');
+  const chestRotationProgram = [
+    { exercises: [
+      { name: 'Développé incliné haltères', category: 'Pectoraux', portion: 'Haut des pectoraux', target: '4x8-12', rest: 90 },
+      { name: 'Écarté à la poulie vis-à-vis', category: 'Pectoraux', portion: 'Milieu des pectoraux', target: '3x10-15', rest: 60 }
+    ] }
+  ];
+  const chestWeekOne = app.rotateAccessoryExercises(chestRotationProgram[0], rotationAnswers, 1, 0, chestRotationProgram);
+  const chestWeekTwo = app.rotateAccessoryExercises(chestRotationProgram[0], rotationAnswers, 2, 0, chestRotationProgram);
+  report('portion pectorale oubliée ajoutée en semaine 2 sans changer le mouvement principal', chestWeekTwo[0].name === chestWeekOne[0].name && chestWeekTwo[1].name !== chestWeekOne[1].name && chestWeekTwo[1].portion === 'Bas des pectoraux');
+  report('couverture pectorale complète sur deux semaines avec un seul accessoire tournant', new Set([...chestWeekOne, ...chestWeekTwo].map(ex => ex.portion)).size === 3);
   const bicepsProgram = [{ exercises: [
     { name: 'Curl incliné haltères', category: 'Biceps', portion: 'Biceps — longue portion', target: '3x8-12', rest: 90 },
     { name: 'Curl pupitre (banc Scott)', category: 'Biceps', portion: 'Biceps — courte portion', target: '3x8-12', rest: 90 }

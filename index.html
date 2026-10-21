@@ -1860,19 +1860,20 @@ function rotateAccessoryExercises(day, answers, week, dayIndex, program) {
         const currentPortion = ex.portion || classifyPortion(ex.category, ex.subgroup || "", ex.name || "");
         const currentIndex = cycle.indexOf(currentPortion);
         if (currentIndex < 0) return;
-        const firstPreferredIndex = (week - 1) % cycle.length;
-        const preferredPortions = cycle.slice(firstPreferredIndex).concat(cycle.slice(0, firstPreferredIndex))
-            .sort((a, b) => (portionCounts[ex.category]?.[a] || 0) - (portionCounts[ex.category]?.[b] || 0));
+        const firstPreferredIndex = (currentIndex + week - 1) % cycle.length;
+        const preferredPortions = cycle.slice(firstPreferredIndex).concat(cycle.slice(0, firstPreferredIndex));
         let candidate = null;
         for (const preferredPortion of preferredPortions) {
-            if (preferredPortion === currentPortion) continue;
+            if ((portionCounts[ex.category]?.[preferredPortion] || 0) > 0) continue;
+            if (preferredPortion === currentPortion) {
+                candidate = ex;
+                break;
+            }
             candidate = filterPool(ex.category, answers?.equip, limitations, answers?.level || "intermediaire", true)
                 .filter(item => (item.portion || classifyPortion(ex.category, item.subgroup || "", item.name || "")) === preferredPortion)
                 .filter(item => item.name !== ex.name && !usedNames.has(item.name))
                 .sort((a, b) => exerciseLevelScore(b, answers?.level || "intermediaire") - exerciseLevelScore(a, answers?.level || "intermediaire"))[0] || null;
             if (candidate) {
-                portionCounts[ex.category] ||= {};
-                portionCounts[ex.category][preferredPortion] = (portionCounts[ex.category][preferredPortion] || 0) + 1;
                 break;
             }
         }
@@ -1882,9 +1883,11 @@ function rotateAccessoryExercises(day, answers, week, dayIndex, program) {
             portionCounts[ex.category][currentPortion] = (portionCounts[ex.category][currentPortion] || 0) + 1;
             return;
         }
-        const portion = candidate.portion || classifyPortion(ex.category, candidate.subgroup || "", candidate.name || "");
-        rotatedProgram[di].exercises[ei] = withId({ ...candidate, category: ex.category, target: ex.target, rest: ex.rest, portion });
+        const portion = candidate === ex ? currentPortion : candidate.portion || classifyPortion(ex.category, candidate.subgroup || "", candidate.name || "");
+        if (candidate !== ex) rotatedProgram[di].exercises[ei] = withId({ ...candidate, category: ex.category, target: ex.target, rest: ex.rest, portion });
         usedNames.add(candidate.name);
+        portionCounts[ex.category] ||= {};
+        portionCounts[ex.category][portion] = (portionCounts[ex.category][portion] || 0) + 1;
     });
     return rotatedProgram[dayIndex]?.exercises || day.exercises;
 }
