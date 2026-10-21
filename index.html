@@ -1496,6 +1496,16 @@ function getStatMuscleTargets(info = {}) {
     }
     return targets;
 }
+function isBodyweightExercise(exercise = {}) {
+    return !!exercise.isBodyweight || exercise.implement === "bodyweight";
+}
+function isSetPerformed(set, info = {}) {
+    const reps = parseFloat(set?.reps);
+    if (!(Number.isFinite(reps) && reps > 0)) return false;
+    if (info.isTime || isBodyweightExercise(info)) return true;
+    const weight = parseFloat(set?.weight);
+    return Number.isFinite(weight) && weight > 0;
+}
 
 function getPortionStats(program) {
     const stats = {};
@@ -1828,16 +1838,17 @@ const ACCESSORY_ROTATIONS = [
     { weeks: [3, 4], category: "Biceps", name: "Curl marteau" },
     { weeks: [5, 6], category: "Triceps", name: "Extension à la poulie prise inversée" },
 ];
-function rotateAccessoryExercises(day, answers, week) {
+function rotateAccessoryExercises(day, answers, week, dayIndex, program) {
     if (!day?.exercises?.length) return day?.exercises || [];
     const rotation = ACCESSORY_ROTATIONS.find(item => item.weeks.includes(week));
     if (!rotation || !day.exercises.some(ex => ex.category === rotation.category)) return day.exercises;
+    if ((program || []).slice(0, dayIndex).some(previousDay => previousDay.exercises?.some(ex => ex.category === rotation.category))) return day.exercises;
     const limitations = (answers?.limitations || []).filter(value => value !== "aucune");
     const candidate = filterPool(rotation.category, answers?.equip, limitations, answers?.level || "intermediaire", true)
         .find(ex => ex.name === rotation.name);
     if (!candidate) return day.exercises;
     const index = [...day.exercises].map((ex, i) => ({ ex, i })).reverse().find(item => item.ex.category === rotation.category)?.i;
-    if (index == null || day.exercises[index].name === candidate.name) return day.exercises;
+    if (index == null || day.exercises[index].name === candidate.name || day.exercises[index].manualSwap) return day.exercises;
     return day.exercises.map((ex, i) => i === index
         ? withId({ ...candidate, category: rotation.category, target: ex.target, rest: ex.rest })
         : ex);
@@ -1958,7 +1969,7 @@ function applySwapChoice(program, answers, dayIndex, exIndex, chosen) {
     return program.map((d, di) => {
         if (di !== dayIndex)
             return d;
-        const newExercises = d.exercises.map((e, ei) => ei === exIndex ? { ...withId(chosen), category: current.category, target: `${parseSetCount(current.target)}x${chosen.isTime ? '30-45' : ((answers.goal === 'force') ? '4-6' : (answers.goal === 'perte_gras' ? '12-15' : '8-12'))}`, rest: current.rest, portion: chosen.portion || classifyPortion(current.category, chosen.subgroup || '', chosen.name || '') } : e);
+        const newExercises = d.exercises.map((e, ei) => ei === exIndex ? { ...withId(chosen), category: current.category, target: `${parseSetCount(current.target)}x${chosen.isTime ? '30-45' : ((answers.goal === 'force') ? '4-6' : (answers.goal === 'perte_gras' ? '12-15' : '8-12'))}`, rest: current.rest, portion: chosen.portion || classifyPortion(current.category, chosen.subgroup || '', chosen.name || ''), manualSwap: true } : e);
         return { ...d, exercises: newExercises };
     });
 }
@@ -1975,7 +1986,7 @@ function swapExercise(program, answers, dayIndex, exIndex) {
             const newProgram = program.map((d, di) => {
                 if (di !== dayIndex)
                     return d;
-                const newExercises = d.exercises.map((e, ei) => ei === exIndex ? { ...withId(candidate), category: current.category, target: `${parseSetCount(current.target)}x${candidate.isTime ? '30-45' : ((answers.goal === 'force') ? '4-6' : (answers.goal === 'perte_gras' ? '12-15' : '8-12'))}`, rest: current.rest, portion: candidate.portion || classifyPortion(current.category, candidate.subgroup || '', candidate.name || '') } : e);
+                const newExercises = d.exercises.map((e, ei) => ei === exIndex ? { ...withId(candidate), category: current.category, target: `${parseSetCount(current.target)}x${candidate.isTime ? '30-45' : ((answers.goal === 'force') ? '4-6' : (answers.goal === 'perte_gras' ? '12-15' : '8-12'))}`, rest: current.rest, portion: candidate.portion || classifyPortion(current.category, candidate.subgroup || '', candidate.name || ''), manualSwap: true } : e);
                 return { ...d, exercises: newExercises };
             });
             return newProgram;
@@ -2183,6 +2194,18 @@ function currentWeekRange() {
     const sunday = new Date(monday);
     sunday.setDate(monday.getDate() + 6);
     return { monday, sunday };
+}
+function isDateInCurrentWeek(value) {
+    if (!value) return false;
+    const rawDate = String(value);
+    let dateKey = rawDate;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(rawDate)) {
+        const parsedDate = new Date(rawDate);
+        if (Number.isNaN(parsedDate.getTime())) return false;
+        dateKey = localDateKey(parsedDate);
+    }
+    const { monday, sunday } = currentWeekRange();
+    return dateKey >= localDateKey(monday) && dateKey <= localDateKey(sunday);
 }
 function cycleWeekRange(startDateIso, weekIndex = 1) {
     const start = startDateIso instanceof Date ? new Date(startDateIso) : new Date(startDateIso || Date.now());
@@ -3064,7 +3087,11 @@ function ProgramBuilder() {
     const isLastStep = stepIndex === STEPS.length - 1;
     const currentDay = program ? program[selectedDayIndex] : null;
     const currentWeek = weekNumber(programStartDate);
-    const activeDay = currentDay ? { ...currentDay, exercises: rotateAccessoryExercises(currentDay, answers, currentWeek) } : null;
+    const activeDay = currentDay ? { ...currentDay, exercises: rotateAccessoryExercises(currentDay, answers, currentWeek, selectedDayIndex, program) } : null;
+    const displayedProgram = program?.map((day, dayIndex) => ({
+        ...day,
+        exercises: rotateAccessoryExercises(day, answers, currentWeek, dayIndex, program),
+    }));
     const sessionExercises = activeDay ? [...activeDay.exercises, ...((dayData?.current?.sessionExercises || []).filter(extra => !activeDay.exercises.some(ex => ex.id === extra.id)))] : [];
     const sessionExerciseIds = new Set(sessionExercises.map(ex => ex.id));
     useEffect(() => {
@@ -3154,7 +3181,13 @@ function ProgramBuilder() {
         if (!program) return;
         let bestIndex = null;
         let bestTime = -1;
+        let latestLog = trainingLog;
         try {
+            const log = await window.storage?.get("training-log", false);
+            if (log?.value) {
+                const parsedLog = JSON.parse(log.value);
+                if (Array.isArray(parsedLog)) latestLog = parsedLog;
+            }
             for (let i = 0; i < program.length; i++) {
                 const res = await window.storage?.get(`custom-session:${i}`, false);
                 if (!res?.value) continue;
@@ -3164,12 +3197,16 @@ function ProgramBuilder() {
                     (sets || []).some(set => String(set?.weight ?? "").trim() !== "" || String(set?.reps ?? "").trim() !== "")
                 );
                 const hasStartedSession = !!current?.date || hasInputs;
-                if (!hasStartedSession) continue;
+                if (!hasStartedSession || !isDateInCurrentWeek(current?.date)) continue;
                 const t = current?.updatedAt ? new Date(current.updatedAt).getTime() : new Date(current?.date || 0).getTime();
                 if (Number.isFinite(t) && t > bestTime) { bestTime = t; bestIndex = i; }
             }
         } catch (e) { /* fall back to first day */ }
-        setSelectedDayIndex(bestIndex == null ? 0 : bestIndex);
+        if (bestIndex == null) {
+            const nextDay = weeklyProgramStatus(program, latestLog).find(day => day.status !== "done");
+            bestIndex = nextDay?.dayIndex ?? 0;
+        }
+        setSelectedDayIndex(bestIndex);
         setMode("track");
     }
     function startFreestyle() {
@@ -3339,7 +3376,7 @@ function ProgramBuilder() {
                     // no log yet
                 }
                 const exerciseMeta = {};
-                freestyleExercises.forEach((ex) => { exerciseMeta[ex.id] = { name: ex.name, category: ex.category, portion: ex.portion || classifyPortion(ex.category, ex.subgroup || "", ex.name || "") || null, isTime: !!ex.isTime, isBodyweight: !!ex.isBodyweight }; });
+                freestyleExercises.forEach((ex) => { exerciseMeta[ex.id] = { name: ex.name, category: ex.category, portion: ex.portion || classifyPortion(ex.category, ex.subgroup || "", ex.name || "") || null, isTime: !!ex.isTime, isBodyweight: isBodyweightExercise(ex) }; });
                 const nextLog = [...log, { ...finished, exerciseMeta, kcal, minutes }].slice(-30);
                 await window.storage.set("freestyle-log", JSON.stringify(nextLog), false);
             }
@@ -3450,7 +3487,7 @@ function ProgramBuilder() {
                 idToInfo[ex.id] = {
                     name: ex.name, category: ex.category,
                     portion: ex.portion || classifyPortion(ex.category, ex.subgroup || "", ex.name || "") || null,
-                    isTime: !!ex.isTime, isBodyweight: !!ex.isBodyweight,
+                    isTime: !!ex.isTime, isBodyweight: isBodyweightExercise(ex),
                     isRenforcement: !!ex.isRenforcement
                 };
             }));
@@ -3458,13 +3495,7 @@ function ProgramBuilder() {
             const weekKey = d => localDateKey(d);
             const validDate = value => { const d = new Date(value); return Number.isNaN(d.getTime()) ? null : d; };
             const isWeighted = info => !info?.isTime && !info?.isBodyweight && !info?.isRenforcement && info?.category !== RENFORCEMENT_CATEGORY;
-            const setPerformed = (set, info) => {
-                const r = parseFloat(set?.reps);
-                if (!(Number.isFinite(r) && r > 0)) return false;
-                if (info?.isBodyweight || info?.isTime) return true;
-                const w = parseFloat(set?.weight);
-                return Number.isFinite(w) && w > 0;
-            };
+            const setPerformed = isSetPerformed;
 
             // Build one canonical list of completed sessions. If an old log entry does not
             // contain its session payload, recover it from custom-session history without duplicating it.
@@ -3547,6 +3578,7 @@ function ProgramBuilder() {
                 let sessionVolume = 0;
                 Object.entries(entry.exercises || {}).forEach(([exId, sets]) => {
                     const info = { ...(idToInfo[exId] || {}), ...(entry.exerciseMeta?.[exId] || {}) };
+                    info.isBodyweight = isBodyweightExercise(info) || isBodyweightExercise(idToInfo[exId] || {});
                     info.portion = info.portion || classifyPortion(info.category || "", info.subgroup || "", info.name || "") || null;
                     const rows = Array.isArray(sets) ? sets : [];
                     rows.forEach(set => {
@@ -4607,6 +4639,11 @@ function ProgramBuilder() {
         setShowSessionAddPicker(false);
     }
     function editPreviousSession() {
+        if (!isDateInCurrentWeek(dayData?.previous?.date)) {
+            setImportFlash("Cette séance appartient à une semaine précédente et ne peut plus être modifiée.");
+            setTimeout(() => setImportFlash(null), 4000);
+            return;
+        }
         setDayData((prev) => {
             if (!prev.previous)
                 return prev;
@@ -4641,11 +4678,17 @@ function ProgramBuilder() {
     }
 
     async function finishSession() {
+        if (editingPrevious && !isDateInCurrentWeek(dayData?.previous?.date)) {
+            cancelEdit();
+            setImportFlash("Cette séance appartient à une semaine précédente et ne peut plus être modifiée.");
+            setTimeout(() => setImportFlash(null), 4000);
+            return;
+        }
         const startTime = dayData?.current?.date;
         const nowIso = new Date().toISOString();
         const exerciseMeta = Object.fromEntries((sessionExercises || []).map((ex) => [
             ex.id,
-            { name: ex.name, category: ex.category, portion: ex.portion || classifyPortion(ex.category, ex.subgroup || "", ex.name || "") || null, subgroup: ex.subgroup || "", target: ex.target || null, rest: ex.rest || null, isTime: !!ex.isTime, isBodyweight: !!ex.isBodyweight, isRenforcement: !!ex.isRenforcement }
+            { name: ex.name, category: ex.category, portion: ex.portion || classifyPortion(ex.category, ex.subgroup || "", ex.name || "") || null, subgroup: ex.subgroup || "", target: ex.target || null, rest: ex.rest || null, isTime: !!ex.isTime, isBodyweight: isBodyweightExercise(ex), isRenforcement: !!ex.isRenforcement }
         ]));
 
         if (editingPrevious) {
@@ -5921,7 +5964,7 @@ function ProgramBuilder() {
                         GOAL_SCHEMES[answers.goal]?.reps,
                         " reps"),
                     ". Haut de fourchette \u2192 + poids et retour au bas. Sinon \u2192 m\u00EAme poids, +1 rep. \u00C9chec \u2192 consolidation. Le volume suit le cycle de 8 semaines.")),
-            program.map((day, di) => (React.createElement("div", { key: di, style: { background: colors.surface, border: `1px solid ${colors.border}` }, className: "rounded-lg p-3" },
+            displayedProgram.map((day, di) => (React.createElement("div", { key: di, style: { background: colors.surface, border: `1px solid ${colors.border}` }, className: "rounded-lg p-3" },
                 React.createElement("div", { style: { fontFamily: displayFont, fontWeight: 700, fontSize: 17 }, className: "mb-2" }, day.title),
                 React.createElement("div", { className: "flex flex-col gap-2" }, day.exercises.map((ex, ei) => {
                     const catColor = CATEGORY_COLORS[ex.category] || colors.accent;
@@ -6073,7 +6116,9 @@ function ProgramBuilder() {
                         dayData.history.length > 1 ? "s" : "",
                         " enregistr\u00E9e",
                         dayData.history.length > 1 ? "s" : ""),
-                    React.createElement("button", { onClick: editPreviousSession, style: { fontFamily: dataFont, fontSize: 11, color: colors.muted, background: "transparent", border: `1px solid ${colors.border}` }, className: "px-2 py-1 rounded" }, "Modifier la derni\u00E8re s\u00E9ance"))),
+                    isDateInCurrentWeek(dayData.previous?.date)
+                        ? React.createElement("button", { onClick: editPreviousSession, style: { fontFamily: dataFont, fontSize: 11, color: colors.muted, background: "transparent", border: `1px solid ${colors.border}` }, className: "px-2 py-1 rounded" }, "Modifier la derni\u00E8re s\u00E9ance")
+                        : React.createElement("span", { style: { fontFamily: dataFont, fontSize: 10, color: colors.faint, textAlign: "right" } }, "Semaine pr\u00E9c\u00E9dente \u00B7 consultation seule"))),
                 editingPrevious && (React.createElement("div", { className: "rounded p-2 flex items-center justify-between gap-2", style: { background: colors.accentDim, border: `1px solid ${colors.accent}` } },
                     React.createElement("div", { style: { fontSize: 12, color: colors.text } }, "Mode correction \u2014 modifie tes s\u00E9ries puis valide."),
                     React.createElement("button", { onClick: cancelEdit, style: { fontFamily: displayFont, fontSize: 10, color: colors.muted, background: "transparent", border: `1px solid ${colors.border}` }, className: "px-2 py-1 rounded uppercase shrink-0" }, "Annuler"))),

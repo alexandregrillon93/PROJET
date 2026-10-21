@@ -34,6 +34,24 @@
   report('validateur disponible', typeof app.validateImportBundle === 'function');
   report('images d’exercices autonomes', Object.values(app.EXERCISE_PHOTOS || {}).every(source => String(source).startsWith('data:image/')));
   report('aucun média externe requis', Object.values(app.EXERCISE_REMOTE_PHOTOS || {}).every(source => !/^https?:/i.test(String(source))));
+  report('séries au poids du corps comptées sans charge', app.isSetPerformed({ reps: '10', weight: '' }, { isBodyweight: true }));
+  report('séries lestées sans charge non comptées', !app.isSetPerformed({ reps: '10', weight: '' }, { isBodyweight: false }));
+  const { monday } = app.currentWeekRange();
+  const previousMonday = new Date(monday);
+  previousMonday.setDate(previousMonday.getDate() - 7);
+  report('date de la semaine en cours modifiable', app.isDateInCurrentWeek(monday));
+  report('séance d’une semaine passée verrouillée', !app.isDateInCurrentWeek(previousMonday));
+  const rotationAnswers = { equip: 'full', level: 'confirme', limitations: [] };
+  const rotationProgram = [
+    { exercises: [{ name: 'Shrugs barre', category: 'Trapèzes', target: '3x8-12', rest: 90 }] },
+    { exercises: [] },
+    { exercises: [{ name: 'Shrugs à la poulie basse', category: 'Trapèzes', target: '3x8-12', rest: 90 }] },
+  ];
+  const firstRotated = app.rotateAccessoryExercises(rotationProgram[0], rotationAnswers, 2, 0, rotationProgram);
+  const secondRotated = app.rotateAccessoryExercises(rotationProgram[2], rotationAnswers, 2, 2, rotationProgram);
+  report('rotation trapèzes sans doublon entre les séances', firstRotated[0].name === 'Élévation en Y (Y-raise)' && secondRotated[0].name === 'Shrugs à la poulie basse');
+  const manualDay = { ...rotationProgram[0], exercises: [{ ...rotationProgram[0].exercises[0], name: 'Shrugs haltères', manualSwap: true }] };
+  report('choix manuel conservé malgré la rotation', app.rotateAccessoryExercises(manualDay, rotationAnswers, 2, 0, rotationProgram)[0].name === 'Shrugs haltères');
   const stored = await app.storage.get('custom-program');
   const snapshot = stored?.value ? JSON.parse(stored.value) : null;
   if (!snapshot) {
