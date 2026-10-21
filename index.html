@@ -1168,7 +1168,7 @@ function getDurationProfile(duration) {
 const CYCLE_WEEKS = 8;
 const CYCLE_EXERCISE_POLICY = {
     anchor: 'Les mouvements principaux restent stables pendant les 8 semaines pour suivre la charge, les reps et les PR.',
-    accessory: 'Les exercices d’isolation peuvent être remplacés manuellement ou lors d’un nouveau cycle ; on ne change pas automatiquement chaque semaine.',
+    accessory: 'Les accessoires tournent chaque semaine vers une autre portion quand une variante adaptée existe ; les choix manuels restent stables.',
     newCycle: 'À la génération d’un nouveau cycle, la sélection des variantes est recalculée selon le niveau, les portions, le matériel et les limitations.'
 };
 // Portions are deliberately rotated across the WEEK, not repeated blindly in
@@ -1326,7 +1326,7 @@ function getDurationSafeSetPlan(day, answers = {}, week = 1) {
     const maxMinutes = (DURATION_TARGETS[answers.duration] || [30,45])[1];
     const makeDay = arr => ({ ...day, exercises: exercises.map((ex,i)=>({ ...ex, target: `${Math.max(1,arr[i])}x${(ex.target.split('x')[1] || (answers.goal === 'force' ? '4-6' : '8-12')).trim()}` })) });
     let working = sets.slice();
-    // Preserve two sets for planned exercises; only explicit singles and deloads may stay at one.
+    // Preserve two sets for every planned exercise; explicit singles and deloads may stay at one.
     const minimumSets = exercises.map(ex => week === CYCLE_WEEKS || parseSetCount(ex.target) <= 1 ? 1 : 2);
     const estimate = () => estimateSessionMinutes(makeDay(working), answers);
     let guard = 0;
@@ -1835,25 +1835,61 @@ function repairDuplicateExercises(program, answers = {}) {
         })
     }));
 }
-const ACCESSORY_ROTATIONS = [
-    { weeks: [1, 2], category: "Trapèzes", name: "Élévation en Y (Y-raise)" },
-    { weeks: [3, 4], category: "Biceps", name: "Curl marteau" },
-    { weeks: [5, 6], category: "Triceps", name: "Extension à la poulie prise inversée" },
-];
 function rotateAccessoryExercises(day, answers, week, dayIndex, program) {
-    if (!day?.exercises?.length) return day?.exercises || [];
-    const rotation = ACCESSORY_ROTATIONS.find(item => item.weeks.includes(week));
-    if (!rotation || !day.exercises.some(ex => ex.category === rotation.category)) return day.exercises;
-    if ((program || []).slice(0, dayIndex).some(previousDay => previousDay.exercises?.some(ex => ex.category === rotation.category))) return day.exercises;
+    if (!day?.exercises?.length || !program?.length || week <= 1) return day?.exercises || [];
+    const rotatedProgram = program.map(item => ({ ...item, exercises: [...(item.exercises || [])] }));
+    const refs = [];
+    rotatedProgram.forEach((item, di) => item.exercises.forEach((ex, ei) => {
+        const cycle = PORTION_CYCLES[ex.category];
+        if (!ex.isRenforcement && cycle?.length > 1 && !ex.manualSwap && !isStableAnchorExercise(ex)) {
+            refs.push({ di, ei, ex, cycle });
+        }
+    }));
+    const rotatingExercises = new Set(refs.map(ref => ref.ex));
+    const portionCounts = {};
+    rotatedProgram.flatMap(item => item.exercises || []).forEach(ex => {
+        if (rotatingExercises.has(ex) || ex.isRenforcement) return;
+        const portion = ex.portion || classifyPortion(ex.category, ex.subgroup || "", ex.name || "");
+        portionCounts[ex.category] ||= {};
+        portionCounts[ex.category][portion] = (portionCounts[ex.category][portion] || 0) + 1;
+    });
+    const usedNames = new Set(rotatedProgram.flatMap(item => item.exercises || [])
+        .map(ex => ex.name));
     const limitations = (answers?.limitations || []).filter(value => value !== "aucune");
-    const candidate = filterPool(rotation.category, answers?.equip, limitations, answers?.level || "intermediaire", true)
-        .find(ex => ex.name === rotation.name);
-    if (!candidate) return day.exercises;
-    const index = [...day.exercises].map((ex, i) => ({ ex, i })).reverse().find(item => item.ex.category === rotation.category)?.i;
-    if (index == null || day.exercises[index].name === candidate.name || day.exercises[index].manualSwap) return day.exercises;
-    return day.exercises.map((ex, i) => i === index
-        ? withId({ ...candidate, category: rotation.category, target: ex.target, rest: ex.rest })
-        : ex);
+    refs.forEach(({ di, ei, ex, cycle }) => {
+        const currentPortion = ex.portion || classifyPortion(ex.category, ex.subgroup || "", ex.name || "");
+        const currentIndex = cycle.indexOf(currentPortion);
+        if (currentIndex < 0) return;
+        const firstPreferredIndex = (week - 1) % cycle.length;
+        const preferredPortions = cycle.slice(firstPreferredIndex).concat(cycle.slice(0, firstPreferredIndex))
+            .sort((a, b) => (portionCounts[ex.category]?.[a] || 0) - (portionCounts[ex.category]?.[b] || 0));
+        let candidate = null;
+        for (const preferredPortion of preferredPortions) {
+            if (preferredPortion === currentPortion) continue;
+            candidate = filterPool(ex.category, answers?.equip, limitations, answers?.level || "intermediaire", true)
+                .filter(item => (item.portion || classifyPortion(ex.category, item.subgroup || "", item.name || "")) === preferredPortion)
+                .filter(item => item.name !== ex.name && !usedNames.has(item.name))
+                .sort((a, b) => exerciseLevelScore(b, answers?.level || "intermediaire") - exerciseLevelScore(a, answers?.level || "intermediaire"))[0] || null;
+            if (candidate) {
+                portionCounts[ex.category] ||= {};
+                portionCounts[ex.category][preferredPortion] = (portionCounts[ex.category][preferredPortion] || 0) + 1;
+                break;
+            }
+        }
+        if (!candidate) {
+            usedNames.add(ex.name);
+            portionCounts[ex.category] ||= {};
+            portionCounts[ex.category][currentPortion] = (portionCounts[ex.category][currentPortion] || 0) + 1;
+            return;
+        }
+        const portion = candidate.portion || classifyPortion(ex.category, candidate.subgroup || "", candidate.name || "");
+        rotatedProgram[di].exercises[ei] = withId({ ...candidate, category: ex.category, target: ex.target, rest: ex.rest, portion });
+        usedNames.add(candidate.name);
+    });
+    return rotatedProgram[dayIndex]?.exercises || day.exercises;
+}
+function isStableAnchorExercise(ex) {
+    return /développé|developpe|squat|soulevé de terre|souleve de terre|fente|hip thrust|dips|pompe|rowing barre|tirage horizontal/i.test(String(ex?.name || ""));
 }
 function fitProgramToDuration(program, answers = {}) {
     const target = DURATION_TARGETS[answers.duration] || [30, 45];
@@ -2208,6 +2244,11 @@ function isDateInCurrentWeek(value) {
     }
     const { monday, sunday } = currentWeekRange();
     return dateKey >= localDateKey(monday) && dateKey <= localDateKey(sunday);
+}
+function resetStaleCurrentSession(sessionData) {
+    const current = sessionData?.current;
+    if (!current?.date || isDateInCurrentWeek(current.date)) return sessionData;
+    return { ...sessionData, current: { date: null, exercises: {} } };
 }
 function cycleWeekRange(startDateIso, weekIndex = 1) {
     const start = startDateIso instanceof Date ? new Date(startDateIso) : new Date(startDateIso || Date.now());
@@ -4218,7 +4259,7 @@ function ProgramBuilder() {
                 const result = await Promise.race([window.storage.get(key, false), timeout]);
                 if (cancelled)
                     return;
-                let savedData = result?.value ? JSON.parse(result.value) : { previous: null, history: [], current: { date: null, exercises: {} } };
+                let savedData = resetStaleCurrentSession(result?.value ? JSON.parse(result.value) : { previous: null, history: [], current: { date: null, exercises: {} } });
                 // The canonical session store can repair an old/missing custom-session
                 // history. This is what keeps the Coach progression available after a
                 // GitHub/PWA update even when a legacy session journal was incomplete.
