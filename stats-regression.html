@@ -51,8 +51,14 @@
   const staleDraft = { history: [{ date: previousMonday.toISOString() }], current: { date: previousMonday.toISOString(), exercises: { oldExercise: [{ reps: '10' }] }, sessionExercises: [{ id: 'oldExercise', name: 'Ancien exercice' }] } };
   const cleanedDraft = app.resetStaleCurrentSession(staleDraft);
   report('brouillon précédent écarté sans toucher à l’historique', cleanedDraft.current.date === null && !cleanedDraft.current.sessionExercises && cleanedDraft.history === staleDraft.history);
+  const staleTimedDraft = { current: { date: null, startedAt: previousMonday.toISOString(), exercises: { oldExercise: [{ reps: '10' }] } } };
+  const cleanedTimedDraft = app.resetStaleCurrentSession(staleTimedDraft);
+  report('chronomètre d’un brouillon abandonné réinitialisé après changement de semaine', cleanedTimedDraft.current.date === null && !cleanedTimedDraft.current.startedAt && Object.keys(cleanedTimedDraft.current.exercises).length === 0);
   const currentDraft = { current: { date: monday.toISOString(), exercises: {}, sessionExercises: [{ id: 'currentExercise' }] } };
   report('brouillon de la semaine en cours conservé', app.resetStaleCurrentSession(currentDraft) === currentDraft);
+  const timedDraft = { current: { date: monday.toISOString(), startedAt: '2026-10-22T10:15:00.000Z', exercises: {} } };
+  report('horodatage de départ conservé avec le brouillon de séance', app.resetStaleCurrentSession(timedDraft).current.startedAt === timedDraft.current.startedAt);
+  report('chronomètre affiché au format heures, minutes et secondes', app.formatSessionElapsedTime(3661) === '01:01:01' && app.formatSessionElapsedTime(59) === '00:00:59');
   const rotationAnswers = { equip: 'full', level: 'confirme', limitations: [] };
   const rotationProgram = [
     { exercises: [{ name: 'Shrugs barre', category: 'Trapèzes', target: '3x8-12', rest: 90 }] },
@@ -88,6 +94,154 @@
   const rotatedBiceps = app.rotateAccessoryExercises(bicepsProgram[0], rotationAnswers, 2, 0, bicepsProgram);
   report('rotation hebdomadaire des accessoires bras sans garder les variantes précédentes', rotatedBiceps.every((ex, index) => ex.name !== bicepsProgram[0].exercises[index].name) && new Set(rotatedBiceps.map(ex => ex.portion)).size === 2);
   const weeklyAnswers = { goal: 'recomposition', days: 4, duration: 'moyen', level: 'confirme', equip: 'full', renforcement: 'non', recovery: 'moyenne', preference: 'mix', training_style: 'classique', limitations: [], priority: [] };
+  const shortSessionCheck = app.analyzeProgram(
+    [{ title: 'Séance courte', exercises: [{ name: 'Curl incliné haltères', category: 'Biceps', target: '2x8-12', rest: 60 }] }],
+    weeklyAnswers
+  );
+  report('séances estimées sous la durée cible signalées dans le bilan', shortSessionCheck.issues.some(issue => issue.startsWith('Séances sous la durée cible')));
+  const generationMatrix = (() => {
+    const goals = ['force', 'hypertrophie', 'perte_gras', 'recomposition'];
+    const durations = ['court', 'moyen', 'long'];
+    const levels = ['debutant', 'intermediaire', 'confirme'];
+    const equipment = ['full', 'basic', 'dumbbell', 'barbell', 'bodyweight'];
+    let checked = 0;
+    let failure = '';
+    for (const days of [2, 3, 4, 5]) {
+      for (const duration of durations) {
+        for (const level of levels) {
+          for (const goal of goals) {
+            for (const equip of equipment) {
+              for (const renforcement of ['non', 'oui']) {
+                const answers = { ...weeklyAnswers, days, duration, level, goal, equip, renforcement };
+                const program = app.generateProgram(answers);
+                const weeklySetTotals = {};
+                checked++;
+                for (const [dayIndex, day] of program.entries()) {
+                  if (!day.exercises.length) {
+                    failure = `séance vide pour ${days} jours, ${duration}, ${level}, ${goal}, ${equip}`;
+                    break;
+                  }
+                  const names = day.exercises.map(ex => ex.name);
+                  if (new Set(names).size !== names.length) {
+                    failure = `doublon dans ${day.title} (${days} jours, ${duration}, ${level}, ${goal}, ${equip})`;
+                    break;
+                  }
+                  if (day.exercises.length > app.getDurationProfile(duration).maxExercises) {
+                    failure = `plafond d’exercices dépassé dans ${day.title} (${days} jours, ${duration}, ${level}, ${goal}, ${equip})`;
+                    break;
+                  }
+                  for (const exercise of day.exercises) {
+                    const available = app.filterPool(exercise.category, equip, [], level, true)
+                      .some(candidate => candidate.name === exercise.name);
+                    if (!available) {
+                      failure = `matériel incompatible pour ${exercise.name} (${equip})`;
+                      break;
+                    }
+                    if (!app.isGroupAllowedOnDay(exercise.category, day.title)) {
+                      failure = `${exercise.category} placé dans ${day.title}`;
+                      break;
+                    }
+                    if (!exercise.isRenforcement
+                      && exercise.target.split('x').slice(1).join('x') !== app.getExerciseRepRange(exercise, goal)) {
+                      failure = `répétitions incohérentes pour ${exercise.name} (${goal})`;
+                      break;
+                    }
+                    if (!exercise.isRenforcement) {
+                      weeklySetTotals[exercise.category] = (weeklySetTotals[exercise.category] || 0)
+                        + app.parseSetCount(exercise.target);
+                    }
+                  }
+                  if (failure) break;
+                  const rotated = app.rotateAccessoryExercises(day, answers, 2, dayIndex, program);
+                  if (new Set(rotated.map(ex => ex.name)).size !== rotated.length) {
+                    failure = `doublon après rotation dans ${day.title} (${days} jours, ${duration}, ${level}, ${goal}, ${equip})`;
+                  }
+                  for (const exercise of rotated) {
+                    if (!exercise.isRenforcement
+                      && exercise.target.split('x').slice(1).join('x') !== app.getExerciseRepRange(exercise, goal)) {
+                      failure = `répétitions incohérentes après rotation pour ${exercise.name} (${goal})`;
+                      break;
+                    }
+                  }
+                  if (failure) break;
+                }
+                if (!failure) {
+                  const weeklyTargets = app.getWeeklyVolumeTargets(answers);
+                  for (const [group, sets] of Object.entries(weeklySetTotals)) {
+                    if (weeklyTargets[group] && sets > weeklyTargets[group] + 1) {
+                      failure = `volume hebdomadaire dépassé pour ${group} (${sets}/${weeklyTargets[group]} séries)`;
+                      break;
+                    }
+                  }
+                }
+                if (failure) break;
+              }
+              if (failure) break;
+            }
+            if (failure) break;
+          }
+          if (failure) break;
+        }
+        if (failure) break;
+      }
+      if (failure) break;
+    }
+    return { checked, failure };
+  })();
+  report('matrice de génération et rotation — 1 440 programmes vérifiés pour doublons, volume, matériel, split et répétitions', !generationMatrix.failure, generationMatrix.failure || `${generationMatrix.checked} combinaisons vérifiées`);
+  const optionMatrix = (() => {
+    const styles = ['classique', 'biset', 'superset'];
+    const preferences = ['mix', 'libres', 'machines'];
+    const limitations = [[], ['dos'], ['genoux'], ['epaules']];
+    let checked = 0;
+    let failure = '';
+    for (const days of [2, 3, 4, 5]) {
+      for (const level of ['debutant', 'intermediaire', 'confirme']) {
+        for (const training_style of styles) {
+          for (const preference of preferences) {
+            for (const limitation of limitations) {
+              const answers = {
+                ...weeklyAnswers,
+                days,
+                level,
+                training_style,
+                preference,
+                limitations: limitation,
+                priority: ['Pectoraux', 'Dos'],
+                renforcement: 'oui',
+              };
+              const program = app.generateProgram(answers);
+              checked++;
+              for (const day of program) {
+                if (day.exercises.some(ex => (ex.riskTags || []).some(tag => limitation.includes(tag)))) {
+                  failure = `mouvement non adapté à la limitation ${limitation.join(', ')} (${days} jours, ${level})`;
+                  break;
+                }
+                const maxGroupSize = training_style === 'biset' ? 2 : 3;
+                if ((day.supersets || []).some(group => group.length < 2
+                  || group.length > maxGroupSize
+                  || group.some(index => index < 0 || index >= day.exercises.length))) {
+                  failure = `groupe de séries invalide (${training_style}, ${days} jours, ${level})`;
+                  break;
+                }
+                if (training_style === 'classique' && day.supersets?.length) {
+                  failure = `superset présent en séries classiques (${days} jours, ${level})`;
+                  break;
+                }
+              }
+              if (failure) break;
+            }
+            if (failure) break;
+          }
+          if (failure) break;
+        }
+        if (failure) break;
+      }
+      if (failure) break;
+    }
+    return { checked, failure };
+  })();
+  report('options — 432 combinaisons de préférences, limitations, priorités et styles', !optionMatrix.failure, optionMatrix.failure || `${optionMatrix.checked} combinaisons vérifiées`);
   const weeklyProgram = app.generateProgram(weeklyAnswers);
   const coverageAcrossFrequencies = [2, 3, 4, 5].every(days => {
     const answers = { ...weeklyAnswers, days };

@@ -757,6 +757,11 @@ const GOAL_SCHEMES = {
     perte_gras: { label: "Perte de gras", sets: 3, reps: "12-15", rest: 45 },
     recomposition: { label: "Recomposition", sets: 4, reps: "8-12", rest: 75 },
 };
+function getExerciseRepRange(exercise, goal) {
+    if (exercise?.isTime) return "30-45";
+    if (goal === "force" && !isStableAnchorExercise(exercise)) return "8-12";
+    return (GOAL_SCHEMES[goal] || GOAL_SCHEMES.recomposition).reps;
+}
 // Split templates: array of days, each day = { title, slots: [{group, count}] }
 // Niveau débutant : structure dédiée. Le split générique ne doit jamais être utilisé
 // pour un débutant : on privilégie 3 séances Full Body quand il s'entraîne 3 jours.
@@ -1119,9 +1124,10 @@ function exerciseLevelScore(ex, level) {
     // écraser les fondamentaux. Une seule variante avancée/session reste possible.
     return advanced ? 10 : (technical ? 20 : basic ? 12 : 15);
 }
-function pickExercises(group, count, equipFilter, limitations, usedNames, level, preference = "mix", preferredPortion = null, allowAdvanced = true) {
+function pickExercises(group, count, equipFilter, limitations, usedNames, level, preference = "mix", preferredPortion = null, allowAdvanced = true, excludedNames = null) {
     const pool = filterPool(group, equipFilter, limitations, level, allowAdvanced);
-    const fresh = pool.filter((e) => !usedNames.has(e.name));
+    const unavailable = excludedNames || new Set();
+    const fresh = pool.filter((e) => !usedNames.has(e.name) && !unavailable.has(e.name));
     const score = (e) => {
         let value = 0;
         if (preference === "machines")
@@ -1147,7 +1153,7 @@ function pickExercises(group, count, equipFilter, limitations, usedNames, level,
     // someone who picked "haltères uniquement". If the filtered pool is exhausted, cycle through
     // it again (repeat an exercise) rather than break the equipment/limitation constraint. If the
     // filtered pool is truly empty, return fewer exercises for this slot instead of the wrong ones.
-    const source = ordered.length >= count ? ordered : [...pool].sort((a, b) => score(b) - score(a));
+    const source = ordered.length >= count ? ordered : pool.filter((e) => !unavailable.has(e.name)).sort((a, b) => score(b) - score(a));
     for (let i = 0; i < count && i < source.length; i++) {
         chosen.push(source[i]);
         usedNames.add(source[i].name);
@@ -1197,15 +1203,23 @@ function getPortionPreference(group, occurrenceIndex = 0) {
 // reinforcement may appear on either. This prevents the distributor from
 // moving a leg exercise into an Upper day just to balance the weekly load.
 const DAY_GROUP_RULES = {
+    push: new Set(["Pectoraux", "Épaules", "Triceps", "Core", "Renforcement"]),
+    pull: new Set(["Dos", "Épaules", "Trapèzes", "Biceps", "Avant-bras", "Core", "Renforcement"]),
+    shoulders: new Set(["Épaules", "Trapèzes", "Core", "Renforcement"]),
+    arms: new Set(["Biceps", "Triceps", "Avant-bras", "Core", "Renforcement"]),
     upper: new Set(["Pectoraux", "Dos", "Épaules", "Biceps", "Triceps", "Trapèzes", "Avant-bras", "Core", "Renforcement"]),
     lower: new Set(["Jambes", "Ischios/Fessiers", "Mollets", "Core", "Adducteurs/Abducteurs", "Renforcement"]),
     full: new Set(["Pectoraux", "Dos", "Épaules", "Biceps", "Triceps", "Trapèzes", "Avant-bras", "Jambes", "Ischios/Fessiers", "Mollets", "Core", "Adducteurs/Abducteurs", "Renforcement"]),
 };
 function getDayType(title = "") {
     const t = String(title).toLowerCase();
-    if (t.includes("full body") || t.includes("full-body") || t.includes("full body")) return "full";
+    if (t.includes("full body") || t.includes("full-body")) return "full";
     if (t.includes("lower") || t.includes("bas") || t.includes("legs") || t.includes("jambes")) return "lower";
-    if (t.includes("upper") || t.includes("haut") || t.includes("push") || t.includes("pull") || t.includes("bras")) return "upper";
+    if (t.includes("push") || t.includes("pector")) return "push";
+    if (t.includes("pull") || t.includes("dos")) return "pull";
+    if (t.includes("bras")) return "arms";
+    if (t.includes("épaules") || t.includes("epaules")) return "shoulders";
+    if (t.includes("upper") || t.includes("haut")) return "upper";
     return "full";
 }
 function isGroupAllowedOnDay(group, title) {
@@ -1324,7 +1338,7 @@ function getDurationSafeSetPlan(day, answers = {}, week = 1) {
     if (!exercises.length) return [];
     const sets = getWeekSetPlan(exercises, answers.goal || 'recomposition', week, answers);
     const maxMinutes = (DURATION_TARGETS[answers.duration] || [30,45])[1];
-    const makeDay = arr => ({ ...day, exercises: exercises.map((ex,i)=>({ ...ex, target: `${Math.max(1,arr[i])}x${(ex.target.split('x')[1] || (answers.goal === 'force' ? '4-6' : '8-12')).trim()}` })) });
+    const makeDay = arr => ({ ...day, exercises: exercises.map((ex,i)=>({ ...ex, target: `${Math.max(1,arr[i])}x${((ex.target || '').split('x').slice(1).join('x') || getExerciseRepRange(ex, answers.goal)).trim()}` })) });
     const minimumSets = exercises.map(() => week === CYCLE_WEEKS ? 1 : 2);
     let working = sets.map((count, index) => Math.max(count, minimumSets[index]));
     const estimate = () => estimateSessionMinutes(makeDay(working), answers);
@@ -1601,13 +1615,20 @@ function ensureTrapeziusExercises(program, answers = {}) {
     const scheme = GOAL_SCHEMES[answers.goal] || GOAL_SCHEMES.recomposition;
     const trainingDays = Number(answers.days) || program.length;
     const directDays = trainingDays >= 4 ? 2 : 1;
+    const maxExercises = getDurationProfile(answers.duration).maxExercises;
+    const mainExerciseCap = Math.max(1, maxExercises - (answers.renforcement === "oui"
+        ? (answers.level === "debutant" ? 1 : 2)
+        : 0));
     const eligibleDays = program.map((day, index) => {
         const title = day.title || "";
         const hasUpperStructure = /Upper|Haut|Pull|Push|Full Body|Dos/i.test(title);
         const hasBackWork = day.exercises.some((ex) => ex.category === "Dos");
         const priority = /Upper|Haut|Pull/i.test(title) ? 0 : /Full Body|Push|Dos/i.test(title) ? 1 : 2;
         return { day, index, priority, eligible: hasUpperStructure || hasBackWork };
-    }).filter((entry) => entry.eligible && !entry.day.exercises.some((ex) => ex.category === "Trapèzes"))
+    }).filter((entry) => entry.eligible
+        && isGroupAllowedOnDay("Trapèzes", entry.day.title)
+        && entry.day.exercises.filter((ex) => !ex.isRenforcement).length < mainExerciseCap
+        && !entry.day.exercises.some((ex) => ex.category === "Trapèzes"))
         .sort((a, b) => a.priority - b.priority || a.index - b.index)
         .slice(0, directDays);
     const selectedDays = new Set(eligibleDays.map((entry) => entry.index));
@@ -1624,7 +1645,7 @@ function ensureTrapeziusExercises(program, answers = {}) {
             exercise = {
                 ...withId(candidate),
                 category: "Trapèzes",
-                target: `${getExerciseSetCount("Trapèzes", answers.level, answers.goal, trainingDays, answers.recovery)}x${candidate.isTime ? "30-45" : scheme.reps}`,
+                target: `${getExerciseSetCount("Trapèzes", answers.level, answers.goal, trainingDays, answers.recovery)}x${getExerciseRepRange(candidate, answers.goal)}`,
                 rest: scheme.rest,
                 portion: candidate.portion || classifyPortion("Trapèzes", candidate.subgroup || "", candidate.name || ""),
             };
@@ -1703,7 +1724,7 @@ function repairPortionCoverage(program, answers) {
             const candidate = candidates.find(e => (e.portion || classifyPortion(category, e.subgroup || '', e.name || '')) === missingPortion) || candidates[0];
             if (!candidate) continue;
             usedNames.delete(current.name);
-            const next = withId({ ...candidate, category, target: `${parseSetCount(current.target)}x${candidate.isTime ? '30-45' : ((answers?.goal === 'force') ? '4-6' : (answers?.goal === 'perte_gras' ? '12-15' : '8-12'))}`, rest: current.rest, portion: candidate.portion || classifyPortion(category, candidate.subgroup || '', candidate.name || '') });
+            const next = withId({ ...candidate, category, target: `${parseSetCount(current.target)}x${getExerciseRepRange(candidate, answers?.goal)}`, rest: current.rest, portion: candidate.portion || classifyPortion(category, candidate.subgroup || '', candidate.name || '') });
             day.exercises[replacementRef.ei] = next;
             usedNames.add(next.name);
             counts[replacementRef.portion] = Math.max(0, (counts[replacementRef.portion] || 1) - 1);
@@ -1723,12 +1744,29 @@ function generateProgram(answers) {
     const priority = answers.priority || [];
     const limitations = (answers.limitations || []).filter((l) => l !== "aucune");
     const cap = DURATION_CAPS[answers.duration] || 6;
+    const maxRenfo = answers.renforcement === "oui" ? (answers.level === "debutant" ? 1 : 2) : 0;
+    const mainExerciseCap = Math.max(1, cap - maxRenfo);
     const usedNames = new Set();
     const weeklyPortionUse = {};
+    const weeklySlotCounts = {};
+    const availableGroups = new Set(Object.keys(POOL).filter(group =>
+        filterPool(group, answers.equip, limitations, answers.level, true).length > 0));
+    template.forEach((day) => day.slots.forEach(([group, count]) => {
+        if (!availableGroups.has(group)) return;
+        weeklySlotCounts[group] = (weeklySlotCounts[group] || 0) + count + (priority.includes(group) ? 1 : 0);
+    }));
+    const templateOrder = new Map(template.map((day, index) => [day.title, index]));
+    const availableSlotCounts = new Map(template.map(day => [
+        day.title,
+        day.slots.reduce((total, [group, count]) =>
+            total + (availableGroups.has(group) && isGroupAllowedOnDay(group, day.title) ? count : 0), 0),
+    ]));
     const durationProfile = getDurationProfile(answers.duration);
     const preferredRestBase = answers.recovery === "faible" ? Math.max(60, Math.round(scheme.rest * 0.9)) : scheme.rest;
     const preferredRest = Math.max(durationProfile.minRest, Math.round(preferredRestBase / 15) * 15);
-    const program = template.map((day) => {
+    const program = [...template]
+        .sort((a, b) => (availableSlotCounts.get(a.title) || 0) - (availableSlotCounts.get(b.title) || 0))
+        .map((day) => {
         let slots = day.slots.map(([group, count, occurrence]) => [group, count, occurrence]);
         let advancedUsedInDay = 0;
         // Priority still increases volume, but only inside the session where the
@@ -1742,33 +1780,42 @@ function generateProgram(answers) {
             // Keep direct arm work present even with only two weekly sessions.
             // It will still respect the duration cap below.
             const candidate = slots.findIndex(x => x[0] === "Core" || x[0] === "Épaules");
-            if (candidate >= 0)
+            if (candidate >= 0) {
+                const [replacedGroup, replacedCount] = slots[candidate];
+                weeklySlotCounts[replacedGroup] = Math.max(0, (weeklySlotCounts[replacedGroup] || 0) - replacedCount);
+                weeklySlotCounts.Triceps = (weeklySlotCounts.Triceps || 0) + 1;
                 slots[candidate] = ["Triceps", 1, slots[candidate][2]];
+            }
         }
         // La durée choisie pilote la densité de la séance, pas un gonflement
         // artificiel d'un seul muscle. On ajoute des groupes complémentaires
         // compatibles avec le type de séance pour couvrir davantage de portions.
-        const minExercises = durationProfile.minExercises;
+        const minExercises = Math.min(durationProfile.minExercises, mainExerciseCap);
         const order = answers.level === "debutant"
             ? ["Mollets", "Core", "Biceps", "Triceps", "Épaules", "Ischios/Fessiers", "Jambes", "Pectoraux", "Dos", "Trapèzes", "Avant-bras", "Adducteurs/Abducteurs"]
             : ["Core", "Mollets", "Biceps", "Triceps", "Épaules", "Trapèzes", "Avant-bras", "Ischios/Fessiers", "Jambes", "Pectoraux", "Dos", "Adducteurs/Abducteurs"];
         let guard = 0;
-        while (slots.length < minExercises && slots.length < durationProfile.maxExercises && guard < 30) {
+        while (slots.length < minExercises && slots.length < mainExerciseCap && guard < 30) {
             guard++;
             let added = false;
             for (const group of order) {
+                if (!availableGroups.has(group)) continue;
                 if (!isGroupAllowedOnDay(group, day.title)) continue;
                 // Évite d'ajouter plusieurs fois de suite le même groupe : on
                 // préfère couvrir les portions et petits groupes avant de répéter.
                 const occurrences = slots.filter(x => x[0] === group).length;
                 if (occurrences >= 2 && group !== "Épaules" && group !== "Core" && group !== "Mollets") continue;
+                const weeklyTarget = getWeeklyVolumeTargets(answers)[group] || 99;
+                if (weeklyTarget < 2 * ((weeklySlotCounts[group] || 0) + 1)) continue;
                 slots.push([group, 1, slots.length]);
+                weeklySlotCounts[group] = (weeklySlotCounts[group] || 0) + 1;
                 added = true;
                 if (slots.length >= minExercises) break;
             }
             if (!added) break;
         }
         let exercises = [];
+        const dayNames = new Set();
         slots.forEach(([group, count, occurrence]) => {
             let usedForGroup = weeklyPortionUse[group] || 0;
             // Pick each exercise separately so repeated work in the same session
@@ -1777,26 +1824,27 @@ function generateProgram(answers) {
             for (let j = 0; j < count; j++) {
                 const preferredPortion = getPortionPreference(group, usedForGroup);
                 let allowAdvanced = answers.level === 'confirme' ? advancedUsedInDay < 1 : true;
-                let picked = pickExercises(group, 1, answers.equip, limitations, usedNames, answers.level, answers.preference, preferredPortion, allowAdvanced);
+                let picked = pickExercises(group, 1, answers.equip, limitations, usedNames, answers.level, answers.preference, preferredPortion, allowAdvanced, dayNames);
                 // If a preferred portion only exists on an advanced movement, allow one
                 // advanced exercise in the confirmed session rather than leaving the slot empty.
                 if (!picked.length && answers.level === 'confirme' && advancedUsedInDay < 1) {
-                    picked = pickExercises(group, 1, answers.equip, limitations, usedNames, answers.level, answers.preference, preferredPortion, true);
+                    picked = pickExercises(group, 1, answers.equip, limitations, usedNames, answers.level, answers.preference, preferredPortion, true, dayNames);
                 }
                 if (!picked.length) continue;
                 const ex = picked[0];
                 if (isAdvancedMovement(ex)) advancedUsedInDay++;
+                dayNames.add(ex.name);
                 exercises.push({
                     ...ex,
-                    target: `${getExerciseSetCount(group, answers.level, answers.goal, answers.days, answers.recovery)}x${ex.isTime ? "30-45" : scheme.reps}`,
+                    target: `${getExerciseSetCount(group, answers.level, answers.goal, answers.days, answers.recovery)}x${getExerciseRepRange(ex, answers.goal)}`,
                     rest: preferredRest,
                 });
                 usedForGroup++;
             }
             weeklyPortionUse[group] = usedForGroup;
         });
-        if (exercises.length > durationProfile.maxExercises) {
-            while (exercises.length > cap) {
+        if (exercises.length > mainExerciseCap) {
+            while (exercises.length > mainExerciseCap) {
                 const counts = {};
                 exercises.forEach((e) => { counts[e.category] = (counts[e.category] || 0) + 1; });
                 let targetCat = null;
@@ -1821,13 +1869,25 @@ function generateProgram(answers) {
         }
         let supersets = buildSupersetGroups(exercises, answers.training_style);
         if (answers.renforcement === "oui") {
-            const maxRenfo = answers.level === "debutant" ? 1 : 2;
-            const renfoPicked = pickExercises(RENFORCEMENT_CATEGORY, maxRenfo, answers.equip, limitations, usedNames, answers.level, answers.preference);
+            const renfoPicked = pickExercises(RENFORCEMENT_CATEGORY, maxRenfo, answers.equip, limitations, usedNames, answers.level, answers.preference, null, true, dayNames);
             renfoPicked.forEach((ex) => {
                 exercises.push({ ...ex, target: `2x${ex.isTime ? "30" : "12-15"}`, rest: 45, isRenforcement: true });
             });
         }
         return { title: day.title, exercises, supersets };
+    });
+    program.sort((a, b) => (templateOrder.get(a.title) || 0) - (templateOrder.get(b.title) || 0));
+    program.forEach((day) => {
+        if (day.exercises.length) return;
+        const donors = program
+            .filter(candidate => candidate !== day && candidate.exercises.length > 1)
+            .sort((a, b) => b.exercises.length - a.exercises.length);
+        for (const donor of donors) {
+            const moveIndex = donor.exercises.findIndex(ex => isGroupAllowedOnDay(ex.category, day.title));
+            if (moveIndex < 0) continue;
+            day.exercises.push(donor.exercises.splice(moveIndex, 1)[0]);
+            break;
+        }
     });
     // Deuxième étage du générateur : les slots définissent la structure, puis
     // ce budget hebdomadaire corrige automatiquement les écarts de volume.
@@ -1837,9 +1897,10 @@ function generateProgram(answers) {
     // redistribue à nouveau le budget hebdomadaire : les nouveaux exercices
     // récupèrent leur part de séries sans augmenter artificiellement le volume
     // total d'un muscle.
-    const fitted = fitProgramToDuration(repaired, answers);
+    const withTrapezius = ensureTrapeziusExercises(repaired, answers);
+    const fitted = fitProgramToDuration(withTrapezius, answers);
     const rebalanced = rebalanceWeeklyVolume(fitted, answers);
-    const uniqueProgram = repairDuplicateExercises(ensureTrapeziusExercises(repairPortionCoverage(rebalanced, answers), answers), answers);
+    const uniqueProgram = repairDuplicateExercises(repairPortionCoverage(rebalanced, answers), answers);
     return uniqueProgram.map((day, dayIndex) => ({
         ...day,
         supersets: dayIndex === 0 ? [] : buildSupersetGroups(day.exercises, answers.training_style),
@@ -1848,27 +1909,42 @@ function generateProgram(answers) {
 function repairDuplicateExercises(program, answers = {}) {
     const usedNames = new Set();
     const limitations = (answers.limitations || []).filter(l => l !== 'aucune');
-    return (program || []).map(day => ({
-        ...day,
-        exercises: (day.exercises || []).map(ex => {
-            if (ex.isRenforcement || !usedNames.has(ex.name)) {
+    return (program || []).map(day => {
+        const dayNames = new Set();
+        const exercises = [];
+        (day.exercises || []).forEach(ex => {
+            if (!dayNames.has(ex.name)) {
+                dayNames.add(ex.name);
                 usedNames.add(ex.name);
-                return ex;
+                exercises.push(ex);
+                return;
             }
             const alternatives = filterPool(ex.category, answers.equip, limitations, answers.level, true)
-                .filter(candidate => !usedNames.has(candidate.name))
+                .filter(candidate => !dayNames.has(candidate.name))
                 .sort((a, b) => {
+                    const aFresh = usedNames.has(a.name) ? 0 : 1;
+                    const bFresh = usedNames.has(b.name) ? 0 : 1;
                     const aSamePortion = (a.portion || classifyPortion(ex.category, a.subgroup || '', a.name || '')) === ex.portion ? 1 : 0;
                     const bSamePortion = (b.portion || classifyPortion(ex.category, b.subgroup || '', b.name || '')) === ex.portion ? 1 : 0;
-                    return bSamePortion - aSamePortion;
+                    return bFresh - aFresh || bSamePortion - aSamePortion;
                 });
             const replacement = alternatives[0];
-            if (!replacement) return ex;
+            if (!replacement) return;
             const next = withId({ ...replacement, category: ex.category });
+            const repRange = ex.isRenforcement
+                ? (next.isTime ? '30' : '12-15')
+                : getExerciseRepRange(next, answers.goal);
+            dayNames.add(next.name);
             usedNames.add(next.name);
-            return { ...next, target: ex.target, rest: ex.rest };
-        })
-    }));
+            exercises.push({
+                ...next,
+                target: `${parseSetCount(ex.target)}x${repRange}`,
+                rest: ex.rest,
+                isRenforcement: ex.isRenforcement,
+            });
+        });
+        return { ...day, exercises };
+    });
 }
 function rotateAccessoryExercises(day, answers, week, dayIndex, program) {
     if (!day?.exercises?.length || !program?.length || week <= 1) return day?.exercises || [];
@@ -1919,7 +1995,13 @@ function rotateAccessoryExercises(day, answers, week, dayIndex, program) {
             return;
         }
         const portion = candidate === ex ? currentPortion : candidate.portion || classifyPortion(ex.category, candidate.subgroup || "", candidate.name || "");
-        if (candidate !== ex) rotatedProgram[di].exercises[ei] = withId({ ...candidate, category: ex.category, target: ex.target, rest: ex.rest, portion });
+        if (candidate !== ex) rotatedProgram[di].exercises[ei] = withId({
+            ...candidate,
+            category: ex.category,
+            target: `${parseSetCount(ex.target)}x${getExerciseRepRange(candidate, answers?.goal)}`,
+            rest: ex.rest,
+            portion,
+        });
         usedNames.add(candidate.name);
         portionCounts[ex.category] ||= {};
         portionCounts[ex.category][portion] = (portionCounts[ex.category][portion] || 0) + 1;
@@ -1935,18 +2017,20 @@ function fitProgramToDuration(program, answers = {}) {
     const minExercises = profile.minExercises;
     const maxExercises = profile.maxExercises;
     const durationLevel = answers.duration === 'long' ? 3 : answers.duration === 'moyen' ? 2 : 1;
-    const dayGroupTotals = () => {
-        const totals = {};
-        (program || []).forEach(day => (day.exercises || []).forEach(ex => {
-            if (ex.isRenforcement) return;
-            totals[ex.category] = (totals[ex.category] || 0) + parseSetCount(ex.target);
-        }));
-        return totals;
-    };
-    const getPortionNeed = (day, category) => {
+    const weeklyExerciseCounts = {};
+    const weeklyPortions = {};
+    (program || []).forEach(day => (day.exercises || []).forEach(ex => {
+        if (!ex.isRenforcement) {
+            weeklyExerciseCounts[ex.category] = (weeklyExerciseCounts[ex.category] || 0) + 1;
+            weeklyPortions[ex.category] ||= new Set();
+            weeklyPortions[ex.category].add(ex.portion || classifyPortion(ex.category, ex.subgroup || '', ex.name || ''));
+        }
+    }));
+    const getPortionNeed = (category) => {
         const required = PORTION_REQUIREMENTS[category] || [];
-        if (!required.length) return null;
-        const used = new Set((program || []).flatMap(d => (d.exercises || []).filter(e => e.category === category && !e.isRenforcement).map(e => e.portion || classifyPortion(category, e.subgroup || '', e.name || ''))));
+        if (!required.length)
+            return null;
+        const used = weeklyPortions[category] || new Set();
         const preferred = PORTION_CYCLES[category] || required;
         return preferred.find(p => !used.has(p)) || null;
     };
@@ -1957,7 +2041,7 @@ function fitProgramToDuration(program, answers = {}) {
             const sets = getDurationSafeSetPlan({ ...day, exercises }, answers, 2);
             const plannedExercises = exercises.map((ex, index) => ({
                 ...ex,
-                target: `${sets[index]}x${(ex.target.split('x')[1] || (answers.goal === 'force' ? '4-6' : '8-12')).trim()}`,
+                target: `${sets[index]}x${(ex.target.split('x')[1] || getExerciseRepRange(ex, answers.goal)).trim()}`,
             }));
             return estimateSessionMinutes({ ...day, exercises: plannedExercises }, answers);
         };
@@ -1967,17 +2051,15 @@ function fitProgramToDuration(program, answers = {}) {
             if (current < wanted) {
                 const limitations = (answers.limitations || []).filter(l => l !== 'aucune');
                 const existing = new Set(exercises.map(e => e.name));
-                const picked = pickExercises(RENFORCEMENT_CATEGORY, wanted - current, answers.equip, limitations, existing, answers.level, answers.preference);
+                const picked = pickExercises(RENFORCEMENT_CATEGORY, wanted - current, answers.equip, limitations, existing, answers.level, answers.preference, null, true, existing);
                 picked.forEach(ex => exercises.push({ ...ex, target: `2x${ex.isTime ? '30' : '12-15'}`, rest: 45, isRenforcement: true }));
             }
         }
-        // Une séance courte reste courte, une longue peut être plus détaillée,
-        // mais on ajoute des portions/exercices plutôt que de gonfler les séries
-        // d'un même groupe. Le volume hebdomadaire reste piloté par les cibles.
+        // Les exercices supplémentaires redistribuent le volume déjà prévu ;
+        // ils ne sont ajoutés que si la cible peut garder deux séries chacun.
         let guard = 0;
         while ((estimate() < target[0] || exercises.length < minExercises) && exercises.length < maxExercises && guard < 40) {
             guard++;
-            const totals = dayGroupTotals();
             const existingNames = new Set(exercises.map(e => e.name));
             let added = false;
             for (const group of groupOrder) {
@@ -1985,18 +2067,20 @@ function fitProgramToDuration(program, answers = {}) {
                 const groupCount = exercises.filter(e => e.category === group && !e.isRenforcement).length;
                 if (groupCount >= 2 && durationLevel < 3) continue;
                 const weeklyTarget = getWeeklyVolumeTargets(answers)[group] || 99;
-                if ((totals[group] || 0) >= weeklyTarget + 1) continue;
-                const preferredPortion = getPortionNeed(day, group);
+                if (weeklyTarget < 2 * ((weeklyExerciseCounts[group] || 0) + 1)) continue;
+                const preferredPortion = getPortionNeed(group);
                 const limitations = (answers.limitations || []).filter(l => l !== 'aucune');
-                let picked = pickExercises(group, 1, answers.equip, limitations, existingNames, answers.level, answers.preference, preferredPortion, answers.level === 'confirme' ? true : true);
+                const picked = pickExercises(group, 1, answers.equip, limitations, existingNames, answers.level, answers.preference, preferredPortion, true, existingNames);
                 if (!picked.length) continue;
                 const ex = picked[0];
-                const reps = ex.isTime ? '30-45' : (answers.goal === 'force' ? '4-6' : '8-12');
-                exercises.push({ ...ex, target: `1x${reps}`, rest: getDurationProfile(answers.duration).minRest });
+                exercises.push({ ...ex, target: `1x${getExerciseRepRange(ex, answers.goal)}`, rest: getDurationProfile(answers.duration).minRest });
                 if (estimate() > target[1]) {
                     exercises.pop();
                     break;
                 }
+                weeklyExerciseCounts[group] = (weeklyExerciseCounts[group] || 0) + 1;
+                weeklyPortions[group] ||= new Set();
+                weeklyPortions[group].add(ex.portion || classifyPortion(group, ex.subgroup || '', ex.name || ''));
                 added = true;
                 break;
             }
@@ -2054,7 +2138,7 @@ function applySwapChoice(program, answers, dayIndex, exIndex, chosen) {
     return program.map((d, di) => {
         if (di !== dayIndex)
             return d;
-        const newExercises = d.exercises.map((e, ei) => ei === exIndex ? { ...withId(chosen), category: current.category, target: `${parseSetCount(current.target)}x${chosen.isTime ? '30-45' : ((answers.goal === 'force') ? '4-6' : (answers.goal === 'perte_gras' ? '12-15' : '8-12'))}`, rest: current.rest, portion: chosen.portion || classifyPortion(current.category, chosen.subgroup || '', chosen.name || ''), manualSwap: true } : e);
+        const newExercises = d.exercises.map((e, ei) => ei === exIndex ? { ...withId(chosen), category: current.category, target: `${parseSetCount(current.target)}x${getExerciseRepRange(chosen, answers.goal)}`, rest: current.rest, portion: chosen.portion || classifyPortion(current.category, chosen.subgroup || '', chosen.name || ''), manualSwap: true } : e);
         return { ...d, exercises: newExercises };
     });
 }
@@ -2071,7 +2155,7 @@ function swapExercise(program, answers, dayIndex, exIndex) {
             const newProgram = program.map((d, di) => {
                 if (di !== dayIndex)
                     return d;
-                const newExercises = d.exercises.map((e, ei) => ei === exIndex ? { ...withId(candidate), category: current.category, target: `${parseSetCount(current.target)}x${candidate.isTime ? '30-45' : ((answers.goal === 'force') ? '4-6' : (answers.goal === 'perte_gras' ? '12-15' : '8-12'))}`, rest: current.rest, portion: candidate.portion || classifyPortion(current.category, candidate.subgroup || '', candidate.name || ''), manualSwap: true } : e);
+                const newExercises = d.exercises.map((e, ei) => ei === exIndex ? { ...withId(candidate), category: current.category, target: `${parseSetCount(current.target)}x${getExerciseRepRange(candidate, answers.goal)}`, rest: current.rest, portion: candidate.portion || classifyPortion(current.category, candidate.subgroup || '', candidate.name || ''), manualSwap: true } : e);
                 return { ...d, exercises: newExercises };
             });
             return newProgram;
@@ -2294,7 +2378,8 @@ function isDateInCurrentWeek(value) {
 }
 function resetStaleCurrentSession(sessionData) {
     const current = sessionData?.current;
-    if (!current?.date || isDateInCurrentWeek(current.date)) return sessionData;
+    const currentSessionDate = current?.date || current?.startedAt;
+    if (!currentSessionDate || isDateInCurrentWeek(currentSessionDate)) return sessionData;
     return { ...sessionData, current: { date: null, exercises: {} } };
 }
 function cycleWeekRange(startDateIso, weekIndex = 1) {
@@ -2494,6 +2579,13 @@ function estimateExerciseSeconds(ex) {
     const work = ex.isTime ? 40 : 42;
     return sets * work + Math.max(0, sets - 1) * rest + 30;
 }
+function formatSessionElapsedTime(totalSeconds) {
+    const seconds = Math.max(0, Math.floor(Number(totalSeconds) || 0));
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const remainder = seconds % 60;
+    return [hours, minutes, remainder].map(value => String(value).padStart(2, "0")).join(":");
+}
 function estimateSessionMinutes(day, answers) {
     if (!day?.exercises?.length) return 0;
     const raw = day.exercises.reduce((sum, ex) => sum + estimateExerciseSeconds(ex), 0);
@@ -2650,8 +2742,10 @@ function analyzeProgram(program, answers) {
     const sessionMinutes = program.map(d => estimateSessionMinutes(d, answers));
     const avgMinutes = sessionMinutes.length ? Math.round(sessionMinutes.reduce((a,b)=>a+b,0) / sessionMinutes.length) : 0;
     const durationTarget = answers?.duration === 'court' ? [30,45] : answers?.duration === 'moyen' ? [45,60] : [60,90];
-    if (avgMinutes < durationTarget[0] - 5) issues.push(`Durée estimée courte (${avgMinutes} min)`);
-    if (avgMinutes > durationTarget[1] + 5) issues.push(`Durée estimée longue (${avgMinutes} min)`);
+    if (avgMinutes < durationTarget[0] - 5) issues.unshift(`Durée estimée courte (${avgMinutes} min)`);
+    if (avgMinutes > durationTarget[1] + 5) issues.unshift(`Durée estimée longue (${avgMinutes} min)`);
+    const shortSessionCount = sessionMinutes.filter(minutes => minutes < durationTarget[0] - 5).length;
+    if (shortSessionCount) issues.unshift(`Séances sous la durée cible : ${shortSessionCount}/${sessionMinutes.length}`);
     return { score, issues: issues.slice(0, 10), strengths: strengths.slice(0, 10), muscles, frequency, portionCoverage, sessionMinutes, duration: avgMinutes };
 }
 function recoveryModifier(checkin) {
@@ -3172,10 +3266,17 @@ function ProgramBuilder() {
     const [loading, setLoading] = useState(false);
     const [restTimer, setRestTimer] = useState(null);
     const [now, setNow] = useState(Date.now());
+    const [lastSessionDuration, setLastSessionDuration] = useState(null);
+    const pendingSessionStart = useRef(null);
     const saveTimer = useRef(null);
     const step = STEPS[stepIndex];
     const isLastStep = stepIndex === STEPS.length - 1;
     const currentDay = program ? program[selectedDayIndex] : null;
+    const pendingStartAt = pendingSessionStart.current?.dayIndex === selectedDayIndex ? pendingSessionStart.current.startedAt : null;
+    const sessionStartedAt = !editingPrevious ? (dayData?.current?.startedAt || pendingStartAt) : null;
+    const sessionElapsedSeconds = sessionStartedAt
+        ? Math.max(0, Math.floor((now - new Date(sessionStartedAt).getTime()) / 1000))
+        : 0;
     const currentWeek = weekNumber(programStartDate);
     const activeDay = currentDay ? { ...currentDay, exercises: rotateAccessoryExercises(currentDay, answers, currentWeek, selectedDayIndex, program) } : null;
     const displayedProgram = program?.map((day, dayIndex) => {
@@ -3185,7 +3286,7 @@ function ProgramBuilder() {
             ...day,
             exercises: exercises.map((ex, index) => ({
                 ...ex,
-                target: `${sets[index]}x${(ex.target.split('x')[1] || (answers.goal === 'force' ? '4-6' : '8-12')).trim()}`,
+                target: `${sets[index]}x${((ex.target || '').split('x').slice(1).join('x') || getExerciseRepRange(ex, answers.goal)).trim()}`,
             })),
         };
     });
@@ -4295,7 +4396,10 @@ function ProgramBuilder() {
         }
     }
     function startTracking() {
+        const startedAt = new Date().toISOString();
+        pendingSessionStart.current = { dayIndex: 0, startedAt };
         setSelectedDayIndex(0);
+        setNow(Date.now());
         setMode("track");
         saveProgram();
     }
@@ -4354,16 +4458,26 @@ function ProgramBuilder() {
                     return true;
                 }).reverse();
                 const cleanedData = { ...savedData, history, previous: history.at(-1) || null };
+                if (!editingPrevious) {
+                    const requestedStart = pendingSessionStart.current?.dayIndex === selectedDayIndex ? pendingSessionStart.current.startedAt : null;
+                    const startedAt = requestedStart || cleanedData.current?.startedAt || cleanedData.current?.date || new Date().toISOString();
+                    cleanedData.current = { ...(cleanedData.current || {}), startedAt };
+                }
                 try { await window.storage.set(key, JSON.stringify(cleanedData), false); } catch (_) {}
+                setNow(Date.now());
                 setDayData(cleanedData);
             }
             catch (e) {
-                if (!cancelled)
-                    setDayData({ previous: null, history: [], current: { date: null, exercises: {} } });
+                if (!cancelled) {
+                    const requestedStart = pendingSessionStart.current?.dayIndex === selectedDayIndex ? pendingSessionStart.current.startedAt : null;
+                    setDayData({ previous: null, history: [], current: { date: null, startedAt: requestedStart, exercises: {} } });
+                }
             }
             finally {
-                if (!cancelled)
+                if (!cancelled) {
                     setLoading(false);
+                    if (pendingSessionStart.current?.dayIndex === selectedDayIndex) pendingSessionStart.current = null;
+                }
             }
         })();
         return () => {
@@ -4555,6 +4669,12 @@ function ProgramBuilder() {
         return () => clearInterval(interval);
     }, [restTimer]);
     useEffect(() => {
+        if (mode !== "track" || !sessionStartedAt || editingPrevious)
+            return;
+        const interval = setInterval(() => setNow(Date.now()), 1000);
+        return () => clearInterval(interval);
+    }, [mode, sessionStartedAt, editingPrevious]);
+    useEffect(() => {
         if (!restTimer)
             return;
         const remaining = Math.ceil((restTimer.endTime - now) / 1000);
@@ -4661,7 +4781,13 @@ function ProgramBuilder() {
             nextExercises[exId] = arr;
             const nextData = {
                 ...prev,
-                current: { date: prev.current.date || new Date().toISOString(), updatedAt: new Date().toISOString(), exercises: nextExercises },
+                current: {
+                    ...prev.current,
+                    date: prev.current.date || new Date().toISOString(),
+                    startedAt: prev.current.startedAt || new Date().toISOString(),
+                    updatedAt: new Date().toISOString(),
+                    exercises: nextExercises,
+                },
             };
             persist(nextData);
             return nextData;
@@ -4682,7 +4808,13 @@ function ProgramBuilder() {
             nextExercises[ex.id] = arr;
             const nextData = {
                 ...prev,
-                current: { date: prev.current.date || new Date().toISOString(), updatedAt: new Date().toISOString(), exercises: nextExercises },
+                current: {
+                    ...prev.current,
+                    date: prev.current.date || new Date().toISOString(),
+                    startedAt: prev.current.startedAt || new Date().toISOString(),
+                    updatedAt: new Date().toISOString(),
+                    exercises: nextExercises,
+                },
             };
             persist(nextData);
             return nextData;
@@ -4706,7 +4838,13 @@ function ProgramBuilder() {
             const nextExercises = { ...prev.current.exercises, [exId]: arr };
             const nextData = {
                 ...prev,
-                current: { date: prev.current.date || new Date().toISOString(), updatedAt: new Date().toISOString(), exercises: nextExercises },
+                current: {
+                    ...prev.current,
+                    date: prev.current.date || new Date().toISOString(),
+                    startedAt: prev.current.startedAt || new Date().toISOString(),
+                    updatedAt: new Date().toISOString(),
+                    exercises: nextExercises,
+                },
             };
             persist(nextData);
             return nextData;
@@ -4784,7 +4922,11 @@ function ProgramBuilder() {
             return;
         }
         const startTime = dayData?.current?.date;
+        const timerStartTime = dayData?.current?.startedAt || startTime;
         const nowIso = new Date().toISOString();
+        const sessionDurationSeconds = timerStartTime
+            ? Math.max(0, Math.floor((Date.now() - new Date(timerStartTime).getTime()) / 1000))
+            : null;
         const exerciseMeta = Object.fromEntries((sessionExercises || []).map((ex) => [
             ex.id,
             { name: ex.name, category: ex.category, portion: ex.portion || classifyPortion(ex.category, ex.subgroup || "", ex.name || "") || null, subgroup: ex.subgroup || "", target: ex.target || null, rest: ex.rest || null, isTime: !!ex.isTime, isBodyweight: isBodyweightExercise(ex), isRenforcement: !!ex.isRenforcement }
@@ -4817,6 +4959,8 @@ function ProgramBuilder() {
 
         const finished = normalizeCompletedSession({
             date: nowIso,
+            startedAt: timerStartTime || null,
+            durationSeconds: sessionDurationSeconds,
             exercises: JSON.parse(JSON.stringify(dayData?.current?.exercises || {})),
             sessionExercises: dayData?.current?.sessionExercises || [],
             exerciseMeta,
@@ -4838,8 +4982,9 @@ function ProgramBuilder() {
         // with the same full payload, so Stats and Coach cannot diverge.
         await upsertCompletedSessionRecord(selectedDayIndex, finished, currentDay?.title || "");
 
-        if (startTime) {
-            const minutes = Math.max(5, Math.round((Date.now() - new Date(startTime).getTime()) / 60000));
+        if (timerStartTime) {
+            setLastSessionDuration(sessionDurationSeconds);
+            const minutes = Math.max(5, Math.round(sessionDurationSeconds / 60));
             let bw = 75;
             try {
                 if (window.storage) {
@@ -4855,6 +5000,10 @@ function ProgramBuilder() {
         setEditingPrevious(false);
         setShowSessionAddPicker(false);
         setCurrentRPE(null);
+        if (sessionDurationSeconds !== null) {
+            setImportFlash(`Séance enregistrée · durée réelle ${formatSessionElapsedTime(sessionDurationSeconds)}.`);
+            setTimeout(() => setImportFlash(null), 7000);
+        }
         // Refresh the dashboard immediately after validation. The user should never
         // have to wait for a later navigation for volume/progression to appear.
         try { await openDashboard(); } catch (_) {}
@@ -5044,7 +5193,11 @@ function ProgramBuilder() {
                 mode === "exercises" && "Bibliothèque d’exercices",
                 mode === "recovery" && "Récupération",
                 mode === "advanced" && "Options avancées",
-                mode === "profile" && "Mon profil"))),
+                mode === "profile" && "Mon profil"),
+            mode === "track" && !editingPrevious && sessionStartedAt && React.createElement("div", { className: "inline-flex items-center gap-2 mt-2 px-3 py-2 rounded-lg", role: "timer", "aria-label": `Temps écoulé ${formatSessionElapsedTime(sessionElapsedSeconds)}`, style: { background: `${colors.accent}18`, border: `1px solid ${colors.accent}70`, width: "fit-content" } },
+                React.createElement("span", { "aria-hidden": true, style: { color: colors.accent, fontSize: 12 } }, "⏱"),
+                React.createElement("span", { style: { fontFamily: displayFont, fontSize: 10, color: colors.muted, letterSpacing: "0.05em" } }, "TEMPS ÉCOULÉ"),
+                React.createElement("strong", { style: { fontFamily: dataFont, fontSize: 18, color: colors.accent, fontVariantNumeric: "tabular-nums" } }, formatSessionElapsedTime(sessionElapsedSeconds)))),
         mode !== "init" && mode !== "intro" && mode !== "home" && (React.createElement("div", { className: "mc-global-identity" },
             React.createElement(FeatureStrip, null))),
         restTimer && (React.createElement("div", { className: "fixed bottom-0 left-0 right-0 px-4 py-3 flex items-center gap-3", style: { background: colors.surfaceAlt, borderTop: `1px solid ${colors.accent}`, zIndex: 50 } },
@@ -5445,6 +5598,9 @@ function ProgramBuilder() {
                 " Terminer la s\u00E9ance libre"))))),
         mode === "dashboard" && (React.createElement("div", { className: "px-4 py-6 flex flex-col gap-4" },
             React.createElement(VisualBanner, { image: MC_ASSETS['screen-5.jpg'], kicker: "PROGRESSION", title: "Chaque s\u00E9ance compte.", caption: "Ton historique devient la mati\u00E8re premi\u00E8re du coach adaptatif." }),
+            lastSessionDuration !== null && React.createElement("div", { className: "mc-stat", role: "status" },
+                React.createElement("span", null, "Dur\u00E9e de la derni\u00E8re s\u00E9ance"),
+                React.createElement("strong", null, formatSessionElapsedTime(lastSessionDuration))),
             React.createElement("button", { onClick: () => setMode(program ? "home" : "quiz"), className: "flex items-center gap-1 self-start px-2 py-1 rounded", style: { color: colors.muted, background: colors.surface, border: `1px solid ${colors.border}`, fontFamily: displayFont, fontSize: 12 } },
                 React.createElement(ArrowLeft, { size: 14 }),
                 " Retour"),
@@ -6202,7 +6358,7 @@ function ProgramBuilder() {
             React.createElement("div", { className: "flex gap-2 mt-2" },
                 React.createElement("button", { onClick: startTracking, className: "flex-1 py-3 rounded-lg uppercase flex items-center justify-center gap-2", style: { background: colors.accent, color: "#181B18", fontFamily: displayFont, fontWeight: 700, fontSize: 13 } },
                     React.createElement(Play, { size: 15 }),
-                    " Commencer \u00E0 suivre"),
+                    " Commencer la s\u00E9ance"),
                 React.createElement("button", { onClick: restart, className: "px-4 py-3 rounded-lg uppercase flex items-center justify-center gap-2", style: { background: "transparent", border: `1px solid ${colors.border}`, color: colors.muted, fontFamily: displayFont, fontSize: 13 } },
                     React.createElement(RotateCcw, { size: 15 }))),
             React.createElement("div", { style: { color: colors.faint, fontSize: 11, textAlign: "center" } }, "\"Commencer \u00E0 suivre\" enregistre ce programme et ouvre le carnet de charge pour saisir tes poids et s\u00E9ries."))),
@@ -6472,14 +6628,17 @@ function ProgramBuilder() {
                                 width: "100%",
                             } }, linkedToNext ? "🔗 Lié en bi-set — toucher pour délier" : "+ Lier au suivant (bi-set/superset)"))));
                 }),
-                lastCalorieBurn !== null && !hasCurrentData && (React.createElement("div", { className: "rounded-lg p-3 flex items-center gap-2", style: { background: `${colors.accent}22`, border: `1px solid ${colors.accent}` } },
+                (lastCalorieBurn !== null || lastSessionDuration !== null) && !hasCurrentData && (React.createElement("div", { className: "rounded-lg p-3 flex items-center gap-2", style: { background: `${colors.accent}22`, border: `1px solid ${colors.accent}` } },
                     React.createElement("span", { style: { fontSize: 18 } }, "\uD83D\uDD25"),
                     React.createElement("div", { style: { fontSize: 12, color: colors.text } },
-                        "S\u00E9ance valid\u00E9e \u2014 environ ",
-                        React.createElement("strong", null,
-                            lastCalorieBurn,
-                            " kcal"),
-                        " br\u00FBl\u00E9es (estimation)."))),
+                        "Séance validée",
+                        lastSessionDuration !== null && React.createElement(React.Fragment, null,
+                            " · durée réelle ",
+                            React.createElement("strong", null, formatSessionElapsedTime(lastSessionDuration))),
+                        lastCalorieBurn !== null && React.createElement(React.Fragment, null,
+                            " · environ ",
+                            React.createElement("strong", null, lastCalorieBurn, " kcal"),
+                            " brûlées (estimation).")))),
                 React.createElement("div", { style: { background: colors.surface, border: `1px solid ${colors.border}`, borderLeft: `3px solid ${colors.good}` }, className: "rounded-lg p-3" },
                     React.createElement("div", { style: { fontFamily: displayFont, fontWeight: 600, fontSize: 13 }, className: "mb-1" }, "\uD83C\uDFC3 Cardio recommand\u00E9"),
                     React.createElement("div", { style: { color: colors.muted, fontSize: 12 } }, CARDIO_ADVICE[answers.goal])),
