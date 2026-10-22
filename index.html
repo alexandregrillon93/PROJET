@@ -5197,7 +5197,7 @@ function ProgramBuilder() {
             mode === "track" && !editingPrevious && sessionStartedAt && React.createElement("div", { className: "inline-flex items-center gap-2 mt-2 px-3 py-2 rounded-lg", role: "timer", "aria-label": `Temps écoulé ${formatSessionElapsedTime(sessionElapsedSeconds)}`, style: { background: `${colors.accent}18`, border: `1px solid ${colors.accent}70`, width: "fit-content" } },
                 React.createElement("span", { "aria-hidden": true, style: { color: colors.accent, fontSize: 12 } }, "⏱"),
                 React.createElement("span", { style: { fontFamily: displayFont, fontSize: 10, color: colors.muted, letterSpacing: "0.05em" } }, "TEMPS ÉCOULÉ"),
-                React.createElement("strong", { style: { fontFamily: dataFont, fontSize: 18, color: colors.accent, fontVariantNumeric: "tabular-nums" } }, formatSessionElapsedTime(sessionElapsedSeconds)))),
+                React.createElement("strong", { style: { fontFamily: dataFont, fontSize: 18, color: colors.accent, fontVariantNumeric: "tabular-nums" } }, formatSessionElapsedTime(sessionElapsedSeconds))))),
         mode !== "init" && mode !== "intro" && mode !== "home" && (React.createElement("div", { className: "mc-global-identity" },
             React.createElement(FeatureStrip, null))),
         restTimer && (React.createElement("div", { className: "fixed bottom-0 left-0 right-0 px-4 py-3 flex items-center gap-3", style: { background: colors.surfaceAlt, borderTop: `1px solid ${colors.accent}`, zIndex: 50 } },
