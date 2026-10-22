@@ -18,4 +18,5 @@ Les données sont conservées dans le navigateur de l’appareil. Pour les trans
 ## Suivi et sauvegardes
 
 - Le tableau de bord estime la couverture des portions musculaires sur les deux semaines à venir, rotation des exercices incluse. Cette prévision ne remplace pas le suivi des séances réellement terminées.
+- Hors semaine de deload, chaque exercice prévoit au moins 2 séries ; le programme ajuste le volume restant pour tenir compte de la durée de séance choisie.
 - Exporte régulièrement une sauvegarde JSON depuis **Profil** ou **Stats**. La restauration remplace les données présentes sur l’appareil et demande une confirmation.

@@ -1325,9 +1325,8 @@ function getDurationSafeSetPlan(day, answers = {}, week = 1) {
     const sets = getWeekSetPlan(exercises, answers.goal || 'recomposition', week, answers);
     const maxMinutes = (DURATION_TARGETS[answers.duration] || [30,45])[1];
     const makeDay = arr => ({ ...day, exercises: exercises.map((ex,i)=>({ ...ex, target: `${Math.max(1,arr[i])}x${(ex.target.split('x')[1] || (answers.goal === 'force' ? '4-6' : '8-12')).trim()}` })) });
-    let working = sets.slice();
-    // Preserve two sets for every planned exercise; explicit singles and deloads may stay at one.
-    const minimumSets = exercises.map(ex => week === CYCLE_WEEKS || parseSetCount(ex.target) <= 1 ? 1 : 2);
+    const minimumSets = exercises.map(() => week === CYCLE_WEEKS ? 1 : 2);
+    let working = sets.map((count, index) => Math.max(count, minimumSets[index]));
     const estimate = () => estimateSessionMinutes(makeDay(working), answers);
     let guard = 0;
     while (estimate() > maxMinutes && guard++ < 100) {
@@ -1954,7 +1953,14 @@ function fitProgramToDuration(program, answers = {}) {
     const groupOrder = ['Core','Mollets','Biceps','Triceps','Épaules','Trapèzes','Avant-bras','Ischios/Fessiers','Jambes','Pectoraux','Dos','Adducteurs/Abducteurs'];
     return (program || []).map((day) => {
         let exercises = (day.exercises || []).map((ex) => ({ ...ex }));
-        const estimate = () => estimateSessionMinutes({ ...day, exercises }, answers);
+        const estimate = () => {
+            const sets = getDurationSafeSetPlan({ ...day, exercises }, answers, 2);
+            const plannedExercises = exercises.map((ex, index) => ({
+                ...ex,
+                target: `${sets[index]}x${(ex.target.split('x')[1] || (answers.goal === 'force' ? '4-6' : '8-12')).trim()}`,
+            }));
+            return estimateSessionMinutes({ ...day, exercises: plannedExercises }, answers);
+        };
         if (answers.renforcement === 'oui') {
             const wanted = answers.level === 'debutant' ? 1 : 2;
             const current = exercises.filter(e => e.isRenforcement).length;
@@ -1985,10 +1991,12 @@ function fitProgramToDuration(program, answers = {}) {
                 let picked = pickExercises(group, 1, answers.equip, limitations, existingNames, answers.level, answers.preference, preferredPortion, answers.level === 'confirme' ? true : true);
                 if (!picked.length) continue;
                 const ex = picked[0];
-                // Accessory fillers start at 1 set; this is intentional: they add
-                // anatomical coverage/time without creating 10-13 set spikes.
                 const reps = ex.isTime ? '30-45' : (answers.goal === 'force' ? '4-6' : '8-12');
                 exercises.push({ ...ex, target: `1x${reps}`, rest: getDurationProfile(answers.duration).minRest });
+                if (estimate() > target[1]) {
+                    exercises.pop();
+                    break;
+                }
                 added = true;
                 break;
             }
@@ -3170,10 +3178,17 @@ function ProgramBuilder() {
     const currentDay = program ? program[selectedDayIndex] : null;
     const currentWeek = weekNumber(programStartDate);
     const activeDay = currentDay ? { ...currentDay, exercises: rotateAccessoryExercises(currentDay, answers, currentWeek, selectedDayIndex, program) } : null;
-    const displayedProgram = program?.map((day, dayIndex) => ({
-        ...day,
-        exercises: rotateAccessoryExercises(day, answers, currentWeek, dayIndex, program),
-    }));
+    const displayedProgram = program?.map((day, dayIndex) => {
+        const exercises = rotateAccessoryExercises(day, answers, currentWeek, dayIndex, program);
+        const sets = getDurationSafeSetPlan({ ...day, exercises }, answers, currentWeek);
+        return {
+            ...day,
+            exercises: exercises.map((ex, index) => ({
+                ...ex,
+                target: `${sets[index]}x${(ex.target.split('x')[1] || (answers.goal === 'force' ? '4-6' : '8-12')).trim()}`,
+            })),
+        };
+    });
     const sessionExercises = activeDay ? [...activeDay.exercises, ...((dayData?.current?.sessionExercises || []).filter(extra => !activeDay.exercises.some(ex => ex.id === extra.id)))] : [];
     const sessionExerciseIds = new Set(sessionExercises.map(ex => ex.id));
     useEffect(() => {
@@ -4566,7 +4581,7 @@ function ProgramBuilder() {
         return basePlan.map((sets, i) => {
             if (week === CYCLE_WEEKS) return sets;
             const ex = sessionExercises[i];
-            const floor = ex?.isRenforcement ? 1 : 2;
+            const floor = 2;
             return Math.min(sets, Math.max(floor, Math.round(sets * recMod.factor)));
         });
     }
@@ -6156,7 +6171,7 @@ function ProgramBuilder() {
                         React.createElement("div", { style: { fontFamily: dataFont, fontSize: 11, color: colors.good, textAlign: "right" } },
                             Math.round(getVolumeMultiplier(answers.goal, weekNumber(programStartDate)) * 100),
                             "% du volume de base")),
-                    React.createElement("div", { style: { fontSize: 10, color: colors.faint, marginTop: 5 } }, "Les séries sont calculées par exercice selon la progression, puis ajustées à la durée choisie. Hors deload, un exercice prévu à plusieurs séries garde au moins 2 séries ; les accessoires programmés à 1 série restent l’exception.")),
+                    React.createElement("div", { style: { fontSize: 10, color: colors.faint, marginTop: 5 } }, "Hors deload, chaque exercice affiche au moins 2 séries. Le volume augmente selon le cycle, puis le coach ajuste les séries au-dessus de ce minimum pour respecter la durée choisie.")),
                 React.createElement("div", { className: "rounded p-2 mt-1", style: { background: recoveryModifier(todayRecovery).tone === 'warn' ? '#FFB06E12' : '#12B8FF12', border: `1px solid ${recoveryModifier(todayRecovery).tone === 'warn' ? '#FFB06E55' : '#12B8FF55'}` } },
                     React.createElement("div", { className: "flex items-center justify-between" },
                         React.createElement("span", { style: { fontFamily: displayFont, fontSize: 10, color: colors.muted } }, "ADAPTATION DU JOUR"),

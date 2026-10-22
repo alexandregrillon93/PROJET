@@ -96,6 +96,18 @@
     return coverage.score >= 0 && coverage.score <= 100 && coverage.rows.length > 0 && coverage.rows.every(row => Array.isArray(row.weeks) && row.weeks.every(week => week === 3 || week === 4));
   });
   report('prévision anatomique valide pour les programmes de 2 à 5 jours', coverageAcrossFrequencies);
+  const balancedPlansRespectDuration = ['court', 'moyen', 'long'].every(duration => [2, 3, 4, 5].every(days => {
+    const answers = { ...weeklyAnswers, days, duration };
+    const program = app.generateProgram(answers);
+    return program.every((day, dayIndex) => {
+      const exercises = app.rotateAccessoryExercises(day, answers, 2, dayIndex, program);
+      const sets = app.getDurationSafeSetPlan({ ...day, exercises }, answers, 2);
+      const plannedDay = { ...day, exercises: exercises.map((ex, index) => ({ ...ex, target: `${sets[index]}x${ex.target.split('x').slice(1).join('x')}` })) };
+      const durationMax = { court: 45, moyen: 60, long: 90 }[duration];
+      return sets.every(count => count >= 2) && app.estimateSessionMinutes(plannedDay, answers) <= durationMax;
+    });
+  }));
+  report('minimum de 2 séries hors deload sans dépasser la durée choisie (2 à 5 jours)', balancedPlansRespectDuration);
   const plannedSetsPreserved = weeklyProgram.every(day => {
     const plan = app.getDurationSafeSetPlan(day, weeklyAnswers, 2);
     return day.exercises.every((ex, index) => parseInt(ex.target.split('x')[0], 10) <= 1 || plan[index] >= 2);
@@ -113,7 +125,7 @@
   report('accessoires des bras actualisés dans toutes les séances de la semaine', rotatingArmsUpdated);
   const explicitSingle = { exercises: [{ name: 'Élévation latérale', category: 'Épaules', target: '1x8-12', rest: 90 }] };
   const deloadSingle = { exercises: [{ name: 'Curl incliné', category: 'Biceps', target: '2x8-12', rest: 90 }] };
-  report('série accessoire volontaire conservée', app.getDurationSafeSetPlan(explicitSingle, weeklyAnswers, 2)[0] === 1);
+  report('exercice normal planifié à 1 série passe à 2', app.getDurationSafeSetPlan(explicitSingle, weeklyAnswers, 2)[0] === 2);
   report('semaine de deload conserve sa réduction', app.getDurationSafeSetPlan(deloadSingle, weeklyAnswers, 8)[0] === 1);
   const weeklyPortionRotation = Object.entries({
     Pectoraux: 3, Dos: 3, Épaules: 3, Trapèzes: 3, Biceps: 3, Triceps: 3,
