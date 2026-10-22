@@ -4918,6 +4918,104 @@ function ProgramBuilder() {
         .mc-light .mc-bottom-nav button { color:#587187 !important; }
         .mc-light .mc-bottom-nav button.active { color:#102334 !important; background:rgba(18,184,255,.13) !important; }
         .mc-light input, .mc-light select { background:#FFFFFF !important; color:#102334 !important; border-color:#C8DCE8 !important; }
+        /* Premium dark pass: prioritize the workout and remove repeated promo panels from the home screen. */
+        .mc-shell { background:linear-gradient(180deg,#080F17 0%,#0A141E 48%,#070D14 100%) !important; }
+        .mc-mobile-frame > .mc-feature-strip,
+        .mc-mobile-frame > .mc-media-card,
+        .mc-mobile-frame > .flex.items-center.justify-between.px-1,
+        .mc-mobile-frame > .mc-glass.mc-neon { display:none !important; }
+        .mc-home-brand { padding:4px 2px 8px; }
+        .mc-home-brand-main img { border-color:rgba(70,185,255,.3); box-shadow:none; }
+        .mc-home-brand-title { font-size:17px; letter-spacing:.08em; }
+        .mc-home-brand-sub { color:#91A4B5; font-size:10px; }
+        .mc-home-hero-panel {
+            border-color:#263B4E;
+            border-radius:20px;
+            box-shadow:0 14px 32px rgba(0,0,0,.24);
+        }
+        .mc-home-hero-panel::before {
+            background:linear-gradient(90deg,rgba(5,13,21,.97),rgba(5,13,21,.82) 62%,rgba(5,13,21,.56)),linear-gradient(0deg,rgba(3,9,15,.82),transparent 72%);
+        }
+        .mc-home-title { font-size:30px; letter-spacing:.015em; }
+        .mc-home-sub { max-width:36em; color:#B0BECA; font-size:12px; }
+        .mc-home-metrics .metric {
+            background:rgba(6,16,25,.56);
+            border-color:rgba(190,220,240,.1);
+        }
+        .mc-home-metrics .metric .label { color:#91A4B5; font-size:9px; }
+        .mc-home-plan { background:rgba(5,14,22,.76); border-color:rgba(122,174,205,.18); }
+        .mc-quick-actions { gap:9px; }
+        .mc-quick-card {
+            border-color:#263B4E;
+            background:linear-gradient(145deg,#111F2C,#0D1822);
+            box-shadow:none;
+            min-height:64px;
+        }
+        .mc-quick-card .icon {
+            background:rgba(24,200,255,.1);
+            border-color:rgba(24,200,255,.15);
+            box-shadow:none;
+        }
+        .mc-quick-card .label { font-size:14px; }
+        .mc-quick-card .caption { color:#91A4B5; font-size:10px; }
+        .mc-shell .mc-glass,
+        .mc-shell .mc-v12-card,
+        .mc-shell .mc-stat {
+            border-color:#243746 !important;
+            box-shadow:0 10px 26px rgba(0,0,0,.18),inset 0 1px 0 rgba(255,255,255,.025) !important;
+        }
+        .mc-shell .mc-glass,
+        .mc-shell .mc-v12-card {
+            background:linear-gradient(145deg,#111E2A,#0D1822) !important;
+        }
+        .mc-shell .mc-stat {
+            background:linear-gradient(145deg,#132331,#0E1A25) !important;
+        }
+        .mc-section-title { color:#D8E2EA; font-size:13px; letter-spacing:.07em; }
+        .mc-v12-muted { color:#A1B1BE; font-size:11px; }
+        .mc-v12-btn { min-height:38px; }
+        .mc-bottom-nav {
+            left:max(12px,calc((100vw - 700px)/2));
+            right:max(12px,calc((100vw - 700px)/2));
+            bottom:calc(12px + env(safe-area-inset-bottom));
+            grid-auto-rows:44px;
+            gap:3px;
+            padding:6px;
+            border-color:rgba(113,151,178,.22) !important;
+            background:rgba(9,16,23,.96) !important;
+            box-shadow:0 12px 36px rgba(0,0,0,.42) !important;
+        }
+        .mc-bottom-nav button { color:#91A4B5; font-size:9px; }
+        .mc-bottom-nav button.active {
+            color:#EAF8FF !important;
+            background:rgba(24,200,255,.12) !important;
+            box-shadow:inset 0 0 0 1px rgba(24,200,255,.25);
+        }
+        .mc-set-grid {
+            background:#101D28;
+            border-color:#263B4E;
+            box-shadow:none;
+        }
+        .mc-set-grid input { min-height:42px; }
+        .mc-shell.mc-light .mc-glass,
+        .mc-shell.mc-light .mc-v12-card {
+            background:linear-gradient(145deg,#FFFFFF,#EDF4F8) !important;
+            border-color:#C8DCE8 !important;
+        }
+        .mc-shell.mc-light .mc-stat {
+            background:linear-gradient(145deg,#FFFFFF,#EAF2F7) !important;
+            border-color:#C8DCE8 !important;
+        }
+        .mc-light .mc-home-sub,
+        .mc-light .mc-home-brand-sub,
+        .mc-light .mc-quick-card .caption { color:#587187 !important; }
+        .mc-light .mc-quick-card { background:linear-gradient(145deg,#FFFFFF,#EDF4F8); border-color:#C8DCE8; }
+        .mc-light .mc-home-hero-panel::before {
+            background:linear-gradient(90deg,rgba(3,12,21,.92),rgba(4,16,27,.72) 62%,rgba(4,16,27,.38)),linear-gradient(0deg,rgba(2,8,14,.72),transparent 72%);
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .mc-shell *, .mc-shell *::before, .mc-shell *::after { scroll-behavior:auto !important; animation-duration:.01ms !important; animation-iteration-count:1 !important; transition-duration:.01ms !important; }
+        }
       `),
         React.createElement("input", { ref: importInputRef, type: "file", accept: "application/json,.json", onChange: importAllData, style: { display: "none" } }),
         showSplash && (React.createElement("div", { className: "mc-splash", role: "status", "aria-label": "Chargement de Muscu Coach" },
