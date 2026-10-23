@@ -3273,8 +3273,9 @@ function ProgramBuilder() {
     const isLastStep = stepIndex === STEPS.length - 1;
     const currentDay = program ? program[selectedDayIndex] : null;
     const sessionStartedAt = !editingPrevious ? dayData?.current?.timerStartedAt || null : null;
+    const sessionPausedAt = !editingPrevious ? dayData?.current?.timerPausedAt || null : null;
     const sessionElapsedSeconds = sessionStartedAt
-        ? Math.max(0, Math.floor((now - new Date(sessionStartedAt).getTime()) / 1000))
+        ? Math.max(0, Math.floor(((sessionPausedAt ? new Date(sessionPausedAt).getTime() : now) - new Date(sessionStartedAt).getTime()) / 1000))
         : 0;
     const currentWeek = weekNumber(programStartDate);
     const activeDay = currentDay ? { ...currentDay, exercises: rotateAccessoryExercises(currentDay, answers, currentWeek, selectedDayIndex, program) } : null;
@@ -4656,11 +4657,11 @@ function ProgramBuilder() {
         return () => clearInterval(interval);
     }, [restTimer]);
     useEffect(() => {
-        if (mode !== "track" || !sessionStartedAt || editingPrevious)
+        if (mode !== "track" || !sessionStartedAt || sessionPausedAt || editingPrevious)
             return;
         const interval = setInterval(() => setNow(Date.now()), 1000);
         return () => clearInterval(interval);
-    }, [mode, sessionStartedAt, editingPrevious]);
+    }, [mode, sessionStartedAt, sessionPausedAt, editingPrevious]);
     useEffect(() => {
         if (!restTimer)
             return;
@@ -4876,6 +4877,32 @@ function ProgramBuilder() {
         });
         setEditingPrevious(true);
     }
+    function togglePauseSessionTimer() {
+        const nowMs = Date.now();
+        setNow(nowMs);
+        setDayData((prev) => {
+            const cur = prev.current || {};
+            if (!cur.timerStartedAt) return prev;
+            let next;
+            if (cur.timerPausedAt) {
+                // Resume: shift the start forward by the paused duration so elapsed time excludes the pause.
+                const shifted = new Date(new Date(cur.timerStartedAt).getTime() + (nowMs - new Date(cur.timerPausedAt).getTime())).toISOString();
+                next = { ...cur, timerStartedAt: shifted, timerPausedAt: null };
+            }
+            else next = { ...cur, timerPausedAt: new Date(nowMs).toISOString() };
+            const nextData = { ...prev, current: next };
+            persist(nextData);
+            return nextData;
+        });
+    }
+    function resetSessionTimer() {
+        if (!window.confirm("Remettre le chrono \u00E0 0 ?")) return;
+        setDayData((prev) => {
+            const nextData = { ...prev, current: { ...prev.current, timerStartedAt: null, timerPausedAt: null } };
+            persist(nextData);
+            return nextData;
+        });
+    }
     function beginSessionTimer() {
         const startIso = new Date().toISOString();
         setNow(Date.now());
@@ -4918,7 +4945,7 @@ function ProgramBuilder() {
         const timerStartTime = dayData?.current?.timerStartedAt || null;
         const nowIso = new Date().toISOString();
         const sessionDurationSeconds = timerStartTime
-            ? Math.max(0, Math.floor((Date.now() - new Date(timerStartTime).getTime()) / 1000))
+            ? Math.max(0, Math.floor(((dayData?.current?.timerPausedAt ? new Date(dayData.current.timerPausedAt).getTime() : Date.now()) - new Date(timerStartTime).getTime()) / 1000))
             : null;
         const exerciseMeta = Object.fromEntries((sessionExercises || []).map((ex) => [
             ex.id,
@@ -5187,14 +5214,14 @@ function ProgramBuilder() {
                 mode === "recovery" && "Récupération",
                 mode === "advanced" && "Options avancées",
                 mode === "profile" && "Mon profil"),
-            mode === "track" && !editingPrevious && sessionStartedAt && React.createElement("div", { className: "inline-flex items-center gap-2 mt-2 px-3 py-2 rounded-lg", role: "timer", "aria-label": `Temps écoulé ${formatSessionElapsedTime(sessionElapsedSeconds)}`, style: { background: `${colors.accent}18`, border: `1px solid ${colors.accent}70`, width: "fit-content" } },
+            mode === "track" && !editingPrevious && sessionStartedAt && React.createElement("div", { className: "inline-flex items-center gap-2 mt-2 px-3 py-2 rounded-lg", role: "timer", "aria-label": `Temps écoulé ${formatSessionElapsedTime(sessionElapsedSeconds)}`, style: { background: `${colors.accent}18`, border: `1px solid ${colors.accent}70`, flexWrap: "wrap" } },
                 React.createElement("span", { "aria-hidden": true, style: { color: colors.accent, fontSize: 12 } }, "⏱"),
                 React.createElement("span", { style: { fontFamily: displayFont, fontSize: 10, color: colors.muted, letterSpacing: "0.05em" } }, "TEMPS ÉCOULÉ"),
-                React.createElement("strong", { style: { fontFamily: dataFont, fontSize: 18, color: colors.accent, fontVariantNumeric: "tabular-nums" } },                 formatSessionElapsedTime(sessionElapsedSeconds))),
+                React.createElement("strong", { style: { fontFamily: dataFont, fontSize: 18, color: sessionPausedAt ? colors.muted : colors.accent, fontVariantNumeric: "tabular-nums" } }, formatSessionElapsedTime(sessionElapsedSeconds)),
+                React.createElement("button", { type: "button", onClick: togglePauseSessionTimer, "aria-label": sessionPausedAt ? "Reprendre le chrono" : "Mettre le chrono en pause", style: { padding: "4px 10px", borderRadius: 8, background: colors.accent, color: "#04141C", fontSize: 12, fontWeight: 700 } }, sessionPausedAt ? "\u25B6 Reprendre" : "\u23F8 Pause"),
+                React.createElement("button", { type: "button", onClick: resetSessionTimer, "aria-label": "Remettre le chrono \u00E0 0", style: { padding: "4px 10px", borderRadius: 8, background: "transparent", border: `1px solid ${colors.border}`, color: colors.text, fontSize: 12 } }, "\u21BA 0")),
                             mode === "track" && !editingPrevious && !sessionStartedAt && React.createElement("button", { type: "button", onClick: beginSessionTimer, className: "mt-2 px-4 py-2 rounded-lg font-semibold", style: { background: colors.accent, color: "#000", display: "block" } }, "▶ Début de la séance"))),
-                        mode !== "init" && mode !== "intro" && mode !== "home" && (React.createElement("div", { className: "mc-global-identity" },
-            React.createElement(FeatureStrip, null))),
-        restTimer && (React.createElement("div", { className: "fixed bottom-0 left-0 right-0 px-4 py-3 flex items-center gap-3", style: { background: colors.surfaceAlt, borderTop: `1px solid ${colors.accent}`, zIndex: 50 } },
+                        restTimer && (React.createElement("div", { className: "fixed bottom-0 left-0 right-0 px-4 py-3 flex items-center gap-3", style: { background: colors.surfaceAlt, borderTop: `1px solid ${colors.accent}`, zIndex: 50 } },
             (() => {
                 const remaining = Math.max(0, (restTimer.endTime - now) / 1000);
                 const pct = Math.max(0, Math.min(1, remaining / restTimer.duration));
@@ -5563,7 +5590,6 @@ function ProgramBuilder() {
                 React.createElement(Check, { size: 17 }),
                 " Terminer la s\u00E9ance libre"))))),
         mode === "dashboard" && (React.createElement("div", { className: "px-4 py-6 flex flex-col gap-4" },
-            React.createElement(VisualBanner, { image: MC_ASSETS['screen-5.jpg'], kicker: "PROGRESSION", title: "Chaque s\u00E9ance compte.", caption: "Ton historique devient la mati\u00E8re premi\u00E8re du coach adaptatif." }),
             lastSessionDuration !== null && React.createElement("div", { className: "mc-stat", role: "status" },
                 React.createElement("span", null, "Dur\u00E9e de la derni\u00E8re s\u00E9ance"),
                 React.createElement("strong", null, formatSessionElapsedTime(lastSessionDuration))),
@@ -5798,13 +5824,10 @@ function ProgramBuilder() {
                     React.createElement(ArrowLeft, { size: 14 }),
                     " Retour"),
                 React.createElement("span", { className: "mc-chip" }, "\uD83E\uDD57 NUTRITION")),
-            React.createElement("div", { className: "mc-glass mc-neon rounded-2xl overflow-hidden relative" },
-                React.createElement("img", { src: MC_ASSETS['screen-5.jpg'], alt: "Nutrition et progression", className: "mc-hero-image" }),
-                React.createElement("div", { style: { position: "absolute", inset: 0, background: "linear-gradient(180deg,transparent 15%,#071522 92%)" } }),
-                React.createElement("div", { style: { position: "absolute", left: 18, right: 18, bottom: 16 } },
-                    React.createElement("div", { style: { fontSize: 10, color: "#7DD9FF", fontFamily: dataFont } }, "COACH NUTRITION"),
-                    React.createElement("div", { style: { fontFamily: displayFont, fontSize: 25, fontWeight: 800 } }, "Ton menu du jour"),
-                    React.createElement("div", { style: { fontSize: 11, color: "#A9BBC9", marginTop: 4 } }, "Calories \u00B7 prot\u00E9ines \u00B7 glucides \u00B7 lipides"))),
+            React.createElement("div", { className: "mc-glass rounded-2xl p-4" },
+                React.createElement("div", { style: { fontSize: 10, color: "#7DD9FF", fontFamily: dataFont } }, "COACH NUTRITION"),
+                React.createElement("div", { style: { fontFamily: displayFont, fontSize: 22, fontWeight: 700 } }, "Ton menu du jour"),
+                React.createElement("div", { style: { fontSize: 11, color: "#A9BBC9", marginTop: 4 } }, "Calories \u00B7 prot\u00E9ines \u00B7 glucides \u00B7 lipides")),
             React.createElement("div", { className: "mc-glass rounded-2xl p-4" },
                 React.createElement("div", { className: "mc-section-title mb-3" }, "1 \u00B7 Ton profil nutrition"),
                 React.createElement("div", { className: "grid grid-cols-2 gap-2" },
@@ -5907,7 +5930,6 @@ function ProgramBuilder() {
                             "\u2022 Les calories et macros sont des estimations, pas une prescription m\u00E9dicale.")));
             })())),
         mode === "coach" && program && (React.createElement("div", { className: "px-4 py-4 pb-40 flex flex-col gap-4" },
-            React.createElement(VisualBanner, { image: MC_ASSETS['screen-5.jpg'], kicker: "COACH ADAPTATIF", title: "Il d\u00E9cide avec toi.", caption: "Historique \u00B7 RIR/RPE \u00B7 fatigue \u00B7 r\u00E9cup\u00E9ration \u00B7 progression." }),
             React.createElement("div", { className: "mc-v12-card" },
                 React.createElement("div", { className: "flex items-center justify-between" },
                     React.createElement("h3", null, "D\u00E9cision du jour"),
@@ -5972,7 +5994,6 @@ function ProgramBuilder() {
                         "S",
                         w))))))),
         mode === "exercises" && program && (React.createElement("div", { className: "px-4 py-4 pb-40 flex flex-col gap-4" },
-            React.createElement(VisualBanner, { image: MC_ASSETS['screen-1.jpg'], kicker: "BIBLIOTH\u00C8QUE", title: "Chaque exercice, bien class\u00E9.", caption: "Muscles \u00B7 mat\u00E9riel \u00B7 niveau \u00B7 dur\u00E9e \u00B7 alternatives." }),
             React.createElement("input", { value: exerciseSearch, onChange: e => setExerciseSearch(e.target.value), placeholder: "Rechercher un exercice\u2026", className: "set-input w-full", style: { background: '#081725', border: '1px solid #1D405B', color: '#fff', padding: 12, borderRadius: 12 } }),
             React.createElement("div", { className: "flex gap-2 overflow-x-auto pb-1" }, ['Tous', ...Object.keys(POOL)].map(c => React.createElement("button", { key: c, onClick: () => setExerciseFilter(c), className: `mc-v12-btn ${exerciseFilter === c ? 'active' : ''}`, style: { whiteSpace: 'nowrap' } }, c))),
             React.createElement("div", { className: "flex flex-col gap-2" }, filteredExerciseCatalog.map(ex => { const range = parseRepRange(ex.target); return React.createElement("button", { key: ex.id, onClick: () => setExerciseDetail(ex), className: "mc-v12-card text-left", style: { display: 'block', width: '100%' } },
@@ -5990,7 +6011,6 @@ function ProgramBuilder() {
                             ex.isTime ? `${range.min}-${range.max} SEC` : `${range.min}-${range.max} RÉPÉTITIONS`))),
                 React.createElement("div", { style: { fontSize: 10, color: '#7F9CAF', marginTop: 7 } }, ex.cue)); })))),
         mode === "recovery" && (React.createElement("div", { className: "px-4 py-4 pb-40 flex flex-col gap-4" },
-            React.createElement(VisualBanner, { image: MC_ASSETS['screen-4.jpg'], kicker: "R\u00C9CUP\u00C9RATION", title: "\u00C9coute ton corps.", caption: "Le coach ajuste le volume avant de te demander plus." }),
             React.createElement("div", { className: "mc-v12-card" },
                 React.createElement("div", { className: "mc-section-title" }, "Check-in simple"),
                 React.createElement("div", { className: "mc-v12-muted mt-1" }, "Plus besoin de taper des chiffres : choisis simplement ce qui correspond \u00E0 ta journ\u00E9e."),
@@ -6035,7 +6055,6 @@ function ProgramBuilder() {
                     "%"),
                 React.createElement("div", { className: "mc-v12-muted" }, "du volume de base recommand\u00E9 aujourd'hui.")))),
         mode === "advanced" && (React.createElement("div", { className: "px-4 py-4 pb-40 flex flex-col gap-4" },
-            React.createElement(VisualBanner, { image: MC_ASSETS['feature-5.jpg'], kicker: "OPTIONS AVANC\u00C9ES", title: "Tout sous contr\u00F4le.", caption: "Personnalise ton exp\u00E9rience sans alourdir tes s\u00E9ances." }),
             React.createElement("div", { className: "mc-v12-card" },
                 React.createElement("div", { className: "mc-section-title" }, "\uD83C\uDFA8 Apparence"),
                 React.createElement("div", { className: "flex gap-2 mt-3" },
@@ -6082,7 +6101,6 @@ function ProgramBuilder() {
                     React.createElement("span", { className: "mc-v12-muted" }, "Notifications"),
                     React.createElement("button", { onClick: toggleNotifications, className: `mc-v12-btn ${advancedSettings.notifications ? 'active' : ''}` }, advancedSettings.notifications ? 'ON' : 'OFF'))))),
         mode === "profile" && (React.createElement("div", { className: "px-4 py-4 pb-40 flex flex-col gap-4" },
-            React.createElement(VisualBanner, { image: MC_ASSETS['screen-2.jpg'], kicker: "PROFIL", title: "Ton programme, tes r\u00E8gles.", caption: "Modifie tes objectifs et r\u00E9g\u00E9n\u00E8re ton programme quand tu veux." }),
             React.createElement("div", { className: "mc-v12-card" },
                 React.createElement("div", { className: "mc-section-title" }, "R\u00E9sum\u00E9"),
                 React.createElement("div", { className: "grid grid-cols-2 gap-2 mt-3" },
@@ -6210,18 +6228,6 @@ function ProgramBuilder() {
             React.createElement("button", { onClick: cancelQuiz, className: "mt-3 w-full py-2 text-center", style: { color: colors.faint, background: "transparent", border: "none", fontFamily: displayFont, fontSize: 11 } }, "Annuler"),
             stepIndex === 0 && (React.createElement("button", { onClick: startFreestyle, className: "mt-3 w-full py-2 text-center", style: { color: colors.faint, background: "transparent", border: "none", fontFamily: displayFont, fontSize: 12 } }, "Pas envie de questionnaire ? Faire une s\u00E9ance libre \u2192")))),
         mode === "result" && program && (React.createElement("div", { className: "px-4 py-4 flex flex-col gap-4" },
-            React.createElement(VisualBanner, { image: MC_ASSETS['screen-6.jpg'], kicker: "PROGRAMME 100 % PERSONNALIS\u00C9", title: "Un plan pens\u00E9 pour toi.", caption: "Exercices, volume, progression et r\u00E9cup\u00E9ration r\u00E9unis." }),
-            React.createElement("div", { className: "grid grid-cols-2 gap-2" },
-                React.createElement("div", { className: "mc-media-card" },
-                    React.createElement("img", { src: MC_ASSETS['feature-2.jpg'], alt: "Progression" }),
-                    React.createElement("div", { className: "mc-media-copy" },
-                        React.createElement("div", { className: "kicker" }, "PROGRESSION"),
-                        React.createElement("div", { className: "title" }, "+1 rep"))),
-                React.createElement("div", { className: "mc-media-card" },
-                    React.createElement("img", { src: MC_ASSETS['feature-4.jpg'], alt: "R\u00E9sultats" }),
-                    React.createElement("div", { className: "mc-media-copy" },
-                        React.createElement("div", { className: "kicker" }, "R\u00C9SULTATS"),
-                        React.createElement("div", { className: "title" }, "Tes r\u00E8gles")))),
             React.createElement("div", { style: { color: colors.muted, fontSize: 13 } },
                 GOAL_SCHEMES[answers.goal].label,
                 " \u00B7 ",
@@ -6333,7 +6339,6 @@ function ProgramBuilder() {
                     React.createElement(RotateCcw, { size: 15 }))),
             React.createElement("div", { style: { color: colors.faint, fontSize: 11, textAlign: "center" } }, "\"Commencer \u00E0 suivre\" enregistre ce programme et ouvre le carnet de charge pour saisir tes poids et s\u00E9ries."))),
         mode === "track" && program && (React.createElement(React.Fragment, null,
-            React.createElement(VisualBanner, { image: MC_ASSETS['screen-4.jpg'], kicker: "S\u00C9ANCE EN DIRECT", title: "Entra\u00EEne-toi. Le coach s\u2019adapte.", caption: "Repos, s\u00E9ries, RIR et progression sont suivis en temps r\u00E9el." }),
             React.createElement("div", { className: "sticky top-0 z-20 rounded-lg mx-4 mt-3 px-3 py-2", style: { background: `${colors.surface}F2`, backdropFilter: "blur(8px)", border: `1px solid ${colors.border}` } },
                 React.createElement("div", { className: "flex items-center justify-between mb-1.5" },
                     React.createElement("span", { style: { fontFamily: displayFont, fontSize: 12, color: colors.muted } },
