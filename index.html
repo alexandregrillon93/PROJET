@@ -2378,7 +2378,7 @@ function isDateInCurrentWeek(value) {
 }
 function resetStaleCurrentSession(sessionData) {
     const current = sessionData?.current;
-    const currentSessionDate = current?.date || current?.startedAt;
+    const currentSessionDate = current?.date || current?.timerStartedAt;
     if (!currentSessionDate || isDateInCurrentWeek(currentSessionDate)) return sessionData;
     return { ...sessionData, current: { date: null, exercises: {} } };
 }
@@ -3267,13 +3267,11 @@ function ProgramBuilder() {
     const [restTimer, setRestTimer] = useState(null);
     const [now, setNow] = useState(Date.now());
     const [lastSessionDuration, setLastSessionDuration] = useState(null);
-    const pendingSessionStart = useRef(null);
     const saveTimer = useRef(null);
     const step = STEPS[stepIndex];
     const isLastStep = stepIndex === STEPS.length - 1;
     const currentDay = program ? program[selectedDayIndex] : null;
-    const pendingStartAt = pendingSessionStart.current?.dayIndex === selectedDayIndex ? pendingSessionStart.current.startedAt : null;
-    const sessionStartedAt = !editingPrevious ? (dayData?.current?.startedAt || pendingStartAt) : null;
+    const sessionStartedAt = !editingPrevious ? dayData?.current?.timerStartedAt || null : null;
     const sessionElapsedSeconds = sessionStartedAt
         ? Math.max(0, Math.floor((now - new Date(sessionStartedAt).getTime()) / 1000))
         : 0;
@@ -4396,10 +4394,7 @@ function ProgramBuilder() {
         }
     }
     function startTracking() {
-        const startedAt = new Date().toISOString();
-        pendingSessionStart.current = { dayIndex: 0, startedAt };
         setSelectedDayIndex(0);
-        setNow(Date.now());
         setMode("track");
         saveProgram();
     }
@@ -4458,26 +4453,17 @@ function ProgramBuilder() {
                     return true;
                 }).reverse();
                 const cleanedData = { ...savedData, history, previous: history.at(-1) || null };
-                if (!editingPrevious) {
-                    const requestedStart = pendingSessionStart.current?.dayIndex === selectedDayIndex ? pendingSessionStart.current.startedAt : null;
-                    const startedAt = requestedStart || cleanedData.current?.startedAt || cleanedData.current?.date || new Date().toISOString();
-                    cleanedData.current = { ...(cleanedData.current || {}), startedAt };
-                }
                 try { await window.storage.set(key, JSON.stringify(cleanedData), false); } catch (_) {}
                 setNow(Date.now());
                 setDayData(cleanedData);
             }
             catch (e) {
-                if (!cancelled) {
-                    const requestedStart = pendingSessionStart.current?.dayIndex === selectedDayIndex ? pendingSessionStart.current.startedAt : null;
-                    setDayData({ previous: null, history: [], current: { date: null, startedAt: requestedStart, exercises: {} } });
-                }
+                if (!cancelled)
+                    setDayData({ previous: null, history: [], current: { date: null, exercises: {} } });
             }
             finally {
-                if (!cancelled) {
+                if (!cancelled)
                     setLoading(false);
-                    if (pendingSessionStart.current?.dayIndex === selectedDayIndex) pendingSessionStart.current = null;
-                }
             }
         })();
         return () => {
@@ -4784,7 +4770,6 @@ function ProgramBuilder() {
                 current: {
                     ...prev.current,
                     date: prev.current.date || new Date().toISOString(),
-                    startedAt: prev.current.startedAt || new Date().toISOString(),
                     updatedAt: new Date().toISOString(),
                     exercises: nextExercises,
                 },
@@ -4811,7 +4796,6 @@ function ProgramBuilder() {
                 current: {
                     ...prev.current,
                     date: prev.current.date || new Date().toISOString(),
-                    startedAt: prev.current.startedAt || new Date().toISOString(),
                     updatedAt: new Date().toISOString(),
                     exercises: nextExercises,
                 },
@@ -4841,7 +4825,6 @@ function ProgramBuilder() {
                 current: {
                     ...prev.current,
                     date: prev.current.date || new Date().toISOString(),
-                    startedAt: prev.current.startedAt || new Date().toISOString(),
                     updatedAt: new Date().toISOString(),
                     exercises: nextExercises,
                 },
@@ -4892,6 +4875,16 @@ function ProgramBuilder() {
         });
         setEditingPrevious(true);
     }
+    function beginSessionTimer() {
+        const startIso = new Date().toISOString();
+        setNow(Date.now());
+        setDayData((prev) => {
+            if (prev.current?.timerStartedAt) return prev;
+            const nextData = { ...prev, current: { ...prev.current, timerStartedAt: startIso, updatedAt: startIso } };
+            persist(nextData);
+            return nextData;
+        });
+    }
     function cancelEdit() {
         setDayData((prev) => ({ ...prev, current: { date: null, exercises: {} } }));
         setEditingPrevious(false);
@@ -4921,8 +4914,7 @@ function ProgramBuilder() {
             setTimeout(() => setImportFlash(null), 4000);
             return;
         }
-        const startTime = dayData?.current?.date;
-        const timerStartTime = dayData?.current?.startedAt || startTime;
+        const timerStartTime = dayData?.current?.timerStartedAt || null;
         const nowIso = new Date().toISOString();
         const sessionDurationSeconds = timerStartTime
             ? Math.max(0, Math.floor((Date.now() - new Date(timerStartTime).getTime()) / 1000))
@@ -5197,8 +5189,9 @@ function ProgramBuilder() {
             mode === "track" && !editingPrevious && sessionStartedAt && React.createElement("div", { className: "inline-flex items-center gap-2 mt-2 px-3 py-2 rounded-lg", role: "timer", "aria-label": `Temps écoulé ${formatSessionElapsedTime(sessionElapsedSeconds)}`, style: { background: `${colors.accent}18`, border: `1px solid ${colors.accent}70`, width: "fit-content" } },
                 React.createElement("span", { "aria-hidden": true, style: { color: colors.accent, fontSize: 12 } }, "⏱"),
                 React.createElement("span", { style: { fontFamily: displayFont, fontSize: 10, color: colors.muted, letterSpacing: "0.05em" } }, "TEMPS ÉCOULÉ"),
-                React.createElement("strong", { style: { fontFamily: dataFont, fontSize: 18, color: colors.accent, fontVariantNumeric: "tabular-nums" } }, formatSessionElapsedTime(sessionElapsedSeconds))))),
-        mode !== "init" && mode !== "intro" && mode !== "home" && (React.createElement("div", { className: "mc-global-identity" },
+                React.createElement("strong", { style: { fontFamily: dataFont, fontSize: 18, color: colors.accent, fontVariantNumeric: "tabular-nums" } },                 formatSessionElapsedTime(sessionElapsedSeconds))),
+                            mode === "track" && !editingPrevious && !sessionStartedAt && React.createElement("button", { type: "button", onClick: beginSessionTimer, className: "mt-2 px-4 py-2 rounded-lg font-semibold", style: { background: colors.accent, color: "#000", display: "block" } }, "▶ Début de la séance"))),
+                        mode !== "init" && mode !== "intro" && mode !== "home" && (React.createElement("div", { className: "mc-global-identity" },
             React.createElement(FeatureStrip, null))),
         restTimer && (React.createElement("div", { className: "fixed bottom-0 left-0 right-0 px-4 py-3 flex items-center gap-3", style: { background: colors.surfaceAlt, borderTop: `1px solid ${colors.accent}`, zIndex: 50 } },
             (() => {
@@ -6663,7 +6656,7 @@ function ProgramBuilder() {
                         } },
                         React.createElement(Check, { size: 16 }),
                         " ",
-                        editingPrevious ? "Valider la correction" : "Terminer la séance"),
+                        editingPrevious ? "Valider la correction" : "Fin de la séance"),
                     !editingPrevious && (React.createElement("button", { onClick: markMissed, className: "px-3 py-3 rounded-lg uppercase", style: {
                             fontFamily: displayFont,
                             fontWeight: 600,
