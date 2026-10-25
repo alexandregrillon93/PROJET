@@ -5379,7 +5379,7 @@ function ProgramBuilder() {
         mode !== "init" && mode !== "intro" && (React.createElement("div", { className: "px-4 pt-6 pb-3", style: { borderBottom: `1px solid ${colors.border}` } },
             React.createElement("div", { style: { fontFamily: displayFont, letterSpacing: "0.08em", color: colors.faint, fontSize: 11 }, className: "uppercase mb-1 flex items-center gap-2" },
                 React.createElement("img", { src: MC_LOGO_DATA, alt: "Muscu Coach Pro", style: { width: 20, height: 20, borderRadius: 6, objectFit: "contain" } }),
-                " Muscu Coach Pro \u00B7 Coach intelligent"),
+                " Muscu Coach"),
             mode !== "home" && React.createElement("h1", { style: { fontFamily: displayFont, fontWeight: 700, fontSize: 24 } },
                 mode === "nutrition" && "Nutrition",
                 mode === "quiz" && `Question ${stepIndex + 1}/${STEPS.length}`,
@@ -5399,7 +5399,7 @@ function ProgramBuilder() {
                 React.createElement("strong", { style: { fontFamily: dataFont, fontSize: 18, color: sessionPausedAt ? colors.muted : colors.accent, fontVariantNumeric: "tabular-nums" } }, formatSessionElapsedTime(sessionElapsedSeconds)),
                 React.createElement("button", { type: "button", onClick: togglePauseSessionTimer, "aria-label": sessionPausedAt ? "Reprendre le chrono" : "Mettre le chrono en pause", style: { padding: "4px 10px", borderRadius: 8, background: colors.accent, color: "#04141C", fontSize: 12, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 5 } }, React.createElement(sessionPausedAt ? Play : Pause, { size: 11 }), sessionPausedAt ? "Reprendre" : "Pause"),
                 React.createElement("button", { type: "button", onClick: resetSessionTimer, "aria-label": "Remettre le chrono \u00E0 0", style: { padding: "4px 10px", borderRadius: 8, background: "transparent", border: `1px solid ${colors.border}`, color: colors.text, fontSize: 12, display: "inline-flex", alignItems: "center", gap: 5 } }, React.createElement(RotateCcw, { size: 11 }), "0")),
-                            mode === "track" && !editingPrevious && !sessionStartedAt && React.createElement("button", { type: "button", onClick: beginSessionTimer, className: "mt-2 px-4 py-2 rounded-lg font-semibold flex items-center gap-2", style: { background: colors.accent, color: "#000", display: "flex" } }, React.createElement(Play, { size: 14 }), "Commencer la séance")),
+                            mode === "track" && !editingPrevious && !sessionStartedAt && React.createElement("button", { type: "button", onClick: beginSessionTimer, className: "mt-2 px-4 py-2 rounded-lg font-semibold flex items-center gap-2", style: { background: colors.accent, color: "#000", display: "flex" } }, React.createElement(Play, { size: 14 }), "Commencer la séance"))),
                         restTimer && (React.createElement("div", { className: "fixed bottom-0 left-0 right-0 px-4 py-3 flex items-center gap-3", style: { background: colors.surfaceAlt, borderTop: `1px solid ${colors.accent}`, zIndex: 50 } },
             (() => {
                 const remaining = Math.max(0, (restTimer.endTime - now) / 1000);
@@ -6875,7 +6875,7 @@ function ProgramBuilder() {
                     "Stats"),
                 React.createElement("button", { className: ["nutrition", "exercises", "recovery", "advanced", "profile"].includes(mode) || showMoreMenu ? "active" : "", onClick: () => setShowMoreMenu((v) => !v) },
                     React.createElement("span", { className: "nav-icon" }, React.createElement(MoreDots, { size: 20 })),
-                    "Plus")))))));
+                    "Plus"))))));
 }
 const rootEl = document.getElementById("root");
 if (!window.React || !window.ReactDOM || !window.ReactDOM.createRoot) {
