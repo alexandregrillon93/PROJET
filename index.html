@@ -1386,42 +1386,52 @@ function getWeeklyDayPlans(program, answers, week, adjustment) {
     if (week === CYCLE_WEEKS || answers.recovery === "faible") return plans;
     const targets = getWeeklyVolumeTargets(answers);
     const multiplier = getPlannedVolumeMultiplier(answers, week);
-    const counts = Object.fromEntries(Object.keys(targets).map(group => [group, 0]));
+    const volume = summarizePlannedVolume(plans).byGroup;
     const priorities = new Set(answers.priority || []);
-    plans.forEach(plan => plan.exercises.forEach((ex, index) => {
-        if (!ex.isRenforcement && Object.hasOwn(counts, ex.category)) counts[ex.category] += plan.sets[index];
-    }));
     const budgets = Object.fromEntries(Object.entries(targets).map(([group, sets]) => [group, Math.round(sets * multiplier)]));
     const [minMinutes, maxMinutes] = DURATION_TARGETS[answers.duration] || DURATION_TARGETS.court;
-    plans.forEach((plan, dayIndex) => {
+    const desiredMinutes = answers.duration === "long" ? Math.round((minMinutes + maxMinutes) / 2) : minMinutes;
+    const equivalent = group => (volume[group]?.direct || 0) + 0.5 * (volume[group]?.indirect || 0);
+    const scheduled = plans.map((plan, dayIndex) => {
         const day = program[dayIndex];
-        const estimate = () => {
+        const evaluate = () => {
             const planned = withPlannedSets(plan.exercises, plan.sets, answers);
-            return estimateSessionMinutes({ ...day, exercises: planned }, answers, getPlannedSupersets(day, plan.exercises, answers, planned));
+            const supersets = getPlannedSupersets(day, plan.exercises, answers, planned);
+            return { supersets, minutes: estimateSessionMinutes({ ...day, exercises: planned }, answers, supersets) };
         };
         const candidates = plan.exercises.flatMap((ex, index) =>
             !ex.isRenforcement && Object.hasOwn(budgets, ex.category) &&
             !(adjustment?.delta < 0 && adjustment.category === ex.category) ? [{ ex, index }] : []);
-        while (estimate() < minMinutes) {
-            const next = candidates.filter(({ ex, index }) =>
-                counts[ex.category] < budgets[ex.category] && plan.sets[index] < maxSetsPerExercise(ex, answers))
-                .sort((a, b) => counts[a.ex.category] / budgets[a.ex.category] - counts[b.ex.category] / budgets[b.ex.category] ||
-                    Number(priorities.has(b.ex.category)) - Number(priorities.has(a.ex.category)) ||
-                    plan.sets[a.index] - plan.sets[b.index])[0];
-            if (!next) break;
+        return { plan, evaluate, candidates, minutes: evaluate().minutes };
+    });
+    while (scheduled.length) {
+        scheduled.sort((a, b) => a.minutes - b.minutes);
+        const { plan, evaluate, candidates, minutes } = scheduled[0];
+        if (minutes >= desiredMinutes) break;
+        const next = candidates.filter(({ ex, index }) =>
+            (volume[ex.category]?.direct || 0) < budgets[ex.category] &&
+            plan.sets[index] < maxSetsPerExercise(ex, answers))
+            .sort((a, b) => equivalent(a.ex.category) / budgets[a.ex.category] - equivalent(b.ex.category) / budgets[b.ex.category] ||
+                Number(priorities.has(b.ex.category)) - Number(priorities.has(a.ex.category)) ||
+                plan.sets[a.index] - plan.sets[b.index])[0];
+        if (!next) {
+            scheduled.shift();
+        } else {
             plan.sets[next.index]++;
-            if (estimate() > maxMinutes) {
+            const result = evaluate();
+            if (result.minutes > maxMinutes) {
                 plan.sets[next.index]--;
                 candidates.splice(candidates.indexOf(next), 1);
                 continue;
             }
-            counts[next.ex.category]++;
+            scheduled[0].minutes = result.minutes;
+            plan.supersets = result.supersets;
+            addMuscleVolume(volume, next.ex, 1);
             plan.scheduledSetAdditions ||= {};
             const group = next.ex.category;
             plan.scheduledSetAdditions[group] = (plan.scheduledSetAdditions[group] || 0) + 1;
         }
-        plan.supersets = getPlannedSupersets(day, plan.exercises, answers, withPlannedSets(plan.exercises, plan.sets, answers));
-    });
+    }
     return plans;
 }
 function getCycleVolumeAdjustment(program, answers, week, start, entries) {
@@ -1529,7 +1539,9 @@ function getWeeklyVolumeTargets(answers) {
     const lowerFactor = goal === 'perte_gras' ? 0.80 : 0.92;
     const upperMajor = ['Pectoraux', 'Dos'];
     const majorMax = level === 'confirme' ? 12 : level === 'intermediaire' ? 10 : 8;
-    const lowerMax = level === 'confirme' ? 10 : level === 'intermediaire' ? 9 : 7;
+    const longerHypertrophy = goal === 'hypertrophie' && answers?.duration === 'long' && recovery !== 'faible';
+    const lowerMax = level === 'confirme' ? (longerHypertrophy ? 11 : 10) :
+        level === 'intermediaire' ? (longerHypertrophy ? 10 : 9) : 7;
     upperMajor.forEach(g => {
         const raw = Math.round(p.major * goalFactor * dayFactor * recoveryFactor * durationFactor + (priority.has(g) ? 2 : 0));
         target[g] = Math.min(majorMax, Math.max(4, raw));
@@ -1551,7 +1563,7 @@ function getWeeklyVolumeTargets(answers) {
 function maxSetsPerExercise(ex, answers = {}) {
     if (ex?.isRenforcement) return 2;
     const level = answers?.level || 'intermediaire';
-    if (level === 'debutant') return 3;
+    if (level === 'debutant' || answers.goal === 'force') return 3;
     const major = new Set(['Pectoraux', 'Dos', 'Jambes', 'Ischios/Fessiers']);
     return major.has(ex?.category) ? 4 : 3;
 }
@@ -2725,6 +2737,7 @@ function formatSessionElapsedTime(totalSeconds) {
     const remainder = seconds % 60;
     return [hours, minutes, remainder].map(value => String(value).padStart(2, "0")).join(":");
 }
+const WARMUP_MINUTES = { court: 5, moyen: 7, long: 10 };
 function estimateSessionMinutes(day, answers, groups) {
     if (!day?.exercises?.length) return 0;
     groups ??= getPlannedSupersets(day, day.exercises, answers);
@@ -2749,9 +2762,8 @@ function estimateSessionMinutes(day, answers, groups) {
     const setupSeconds = duration === 'long' ? 35 : duration === 'moyen' ? 25 : 15;
     const transition = Math.max(0, day.exercises.length - 1 - internalTransitions) * transitionSeconds;
     const setup = day.exercises.length * setupSeconds;
-    const warmup = (duration === 'long' ? 10 : duration === 'moyen' ? 7 : 5) * 60;
-    const cooldown = duration === 'long' ? 4 * 60 : duration === 'moyen' ? 2 * 60 : 0;
-    return Math.ceil((raw + transition + setup + warmup + cooldown) / 60);
+    const warmup = (WARMUP_MINUTES[duration] || WARMUP_MINUTES.court) * 60;
+    return Math.ceil((raw + transition + setup + warmup) / 60);
 }
 
 function analyzeProgram(program, answers) {
@@ -6816,7 +6828,7 @@ function ProgramBuilder() {
                     React.createElement("button", { onClick: cancelEdit, style: { fontFamily: displayFont, fontSize: 10, color: colors.muted, background: "transparent", border: `1px solid ${colors.border}` }, className: "px-2 py-1 rounded uppercase shrink-0" }, "Annuler"))),
                 editingPrevious && (React.createElement("button", { onClick: addExerciseFromPrompt, className: "w-full py-2 rounded uppercase", style: { background: colors.surface, color: colors.accent, border: `1px dashed ${colors.accent}`, fontFamily: displayFont, fontSize: 11 } }, "+ Ajouter un exercice à cette séance")),
                 React.createElement("div", { style: { background: colors.surface, border: `1px solid ${colors.border}` }, className: "rounded-lg p-3" },
-                    React.createElement("div", { style: { fontFamily: displayFont, fontWeight: 600, fontSize: 14, display: "flex", alignItems: "center", gap: 6 }, className: "mb-2" }, React.createElement(Flame, { size: 14, color: colors.accent }), "\u00C9chauffement (5-8 min)"),
+                    React.createElement("div", { style: { fontFamily: displayFont, fontWeight: 600, fontSize: 14, display: "flex", alignItems: "center", gap: 6 }, className: "mb-2" }, React.createElement(Flame, { size: 14, color: colors.accent }), `Échauffement (${WARMUP_MINUTES[answers.duration] || WARMUP_MINUTES.court} min)`),
                     React.createElement("ul", { style: { color: colors.muted, fontSize: 12 }, className: "flex flex-col gap-1 pl-4 list-disc" }, WARMUP.map((w, i) => (React.createElement("li", { key: i }, w))))),
                 sessionExercises.map((ex, exIndex) => {
                     const sets = getExSets(ex.id);
