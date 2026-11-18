@@ -1404,8 +1404,17 @@ function getWeeklyDayPlans(program, answers, week, adjustment) {
     const plans = scheduledProgram.map(day => getDayVolumePlan(day, answers, week));
     if (!plans.length) return plans;
     if (week === CYCLE_WEEKS) {
+        const previousPlans = getWeeklyDayPlans(program, answers, week - 1);
+        const levelCap = answers.level === "confirme" && answers.goal !== "force" && answers.recovery !== "faible" ? 3 : 2;
         plans.forEach((plan, dayIndex) => {
-            plan.sets = plan.sets.map(sets => Math.min(sets, 2));
+            const previous = previousPlans[dayIndex];
+            plan.sets = plan.sets.map((sets, index) => {
+                const sameExercise = previous.exercises.findIndex(ex => ex.id === plan.exercises[index].id);
+                if (sameExercise < 0) return Math.min(sets, 2);
+                const previousSets = previous.sets[sameExercise];
+                const exerciseCap = previousSets > 2 ? previousSets - 1 : previousSets;
+                return Math.min(sets, levelCap, exerciseCap);
+            });
             plan.supersets = getPlannedSupersets(scheduledProgram[dayIndex], plan.exercises, answers,
                 withPlannedSets(plan.exercises, plan.sets, answers));
         });
