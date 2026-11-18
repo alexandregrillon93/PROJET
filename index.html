@@ -1389,8 +1389,23 @@ function getDayVolumePlan(day, answers = {}, week = 1, adjustment) {
     return { exercises, sets, supersets: getPlannedSupersets(day, exercises, answers, withPlannedSets(exercises, sets, answers)),
         exerciseIndices: exercises.map(exercise => all.indexOf(exercise)), adjustment: appliedAdjustment };
 }
+const coverageRotationCache = new WeakMap();
+function getProgramForWeek(program, answers, week) {
+    if (!program || program.length < 2 || program.length > 3 || week % 2 !== 0) return program;
+    let byAnswers = coverageRotationCache.get(program);
+    if (!byAnswers) {
+        byAnswers = new WeakMap();
+        coverageRotationCache.set(program, byAnswers);
+    }
+    if (!byAnswers.has(answers)) {
+        const firstWeek = program.map(day => getDayVolumePlan(day, answers, 1));
+        byAnswers.set(answers, improveWeeklyCoverage(program, answers, { week: 2, preserveOrder: true, referencePlans: firstWeek }));
+    }
+    return byAnswers.get(answers);
+}
 function getDayPlanForWeek(program, dayIndex, answers, week, adjustment) {
-    return getDayVolumePlan(program[dayIndex], answers, week, adjustment?.dayIndex === dayIndex ? adjustment : null);
+    const scheduled = getProgramForWeek(program, answers, week);
+    return getDayVolumePlan(scheduled[dayIndex], answers, week, adjustment?.dayIndex === dayIndex ? adjustment : null);
 }
 function getWeeklyDayPlans(program, answers, week, adjustment) {
     const plans = (program || []).map((_, index) => getDayPlanForWeek(program, index, answers, week, adjustment));
@@ -1427,9 +1442,10 @@ function getWeeklyDayPlans(program, answers, week, adjustment) {
             plan.scheduledSetAdditions[group] = (plan.scheduledSetAdditions[group] || 0) + 1;
         }
     }
+    const scheduledProgram = getProgramForWeek(program, answers, week);
     plans.forEach((plan, index) => {
         if (plan.scheduledSetAdditions) plan.supersets = getPlannedSupersets(
-            program[index], plan.exercises, answers, withPlannedSets(plan.exercises, plan.sets, answers));
+            scheduledProgram[index], plan.exercises, answers, withPlannedSets(plan.exercises, plan.sets, answers));
     });
     return plans;
 }
@@ -1447,8 +1463,8 @@ function getCycleVolumeAdjustment(program, answers, week, start, entries) {
     });
     const sessions = [...recent.values()].sort((a, b) => a.date - b.date).map(item => item.session);
     if (sessions.length < 2) return null;
-    const candidates = program.flatMap((day, dayIndex) => {
-        const plan = getDayVolumePlan(day, answers, week);
+    const candidates = program.flatMap((_, dayIndex) => {
+        const plan = getDayPlanForWeek(program, dayIndex, answers, week);
         return plan.exercises.flatMap((ex, index) => {
             if (ex.isRenforcement || ex.isTime) return [];
             const seen = sessions.flatMap(session => {
@@ -1719,6 +1735,15 @@ function getWeeklyPortionCoverage(program, answers, week = 1, adjustment, plans 
         availableCount: availableRows.length,
         unavailableCount: rows.length - availableRows.length,
     };
+}
+function getPlannedCoverage(program, answers, week = 1, adjustment, plans = getWeeklyDayPlans(program, answers, week, adjustment)) {
+    if (!program || program.length < 2 || program.length > 3)
+        return { ...getWeeklyPortionCoverage(program, answers, week, adjustment, plans), periodLabel: `semaine ${week}` };
+    const first = week % 2 === 0 ? week - 1 : week;
+    const other = week === first ? first + 1 : first;
+    const periodPlans = [...plans, ...getWeeklyDayPlans(program, answers, other)];
+    return { ...getWeeklyPortionCoverage(program, answers, week, adjustment, periodPlans),
+        periodLabel: `semaines ${first} et ${first + 1}` };
 }
 
 const WARMUP = [
@@ -2220,14 +2245,15 @@ function isStableAnchorExercise(ex) {
     return /développé|developpe|squat|soulevé de terre|souleve de terre|fente|hip thrust|dips|pompe|rowing barre|tirage horizontal|tirage vertical|presse à cuisses/i.test(String(ex?.name || ""));
 }
 function improveWeeklyCoverage(program, answers, options = {}) {
-    const { week = 1, preserveOrder = false, protectedIds = new Set(), frozenDays = new Set() } = options;
+    const { week = 1, preserveOrder = false, protectedIds = new Set(), frozenDays = new Set(), referencePlans = [] } = options;
     const arrange = (day, exercises) => preserveOrder || hasManualSupersets(day, answers.training_style)
         ? exercises
         : arrangeSupersetExercises(exercises, getAutomaticSupersetStyle(exercises, answers, true));
     const days = program.map(day => ({ ...day, exercises: arrange(day, day.exercises), manualSupersets: hasManualSupersets(day, answers.training_style) }));
     const { maxExercises } = getExerciseProfile(answers.level);
     const budgets = getWeeklyVolumeTargets(answers);
-    const coverageReserve = answers.recovery === "faible" ? 0 : program.length >= 4 ? 2 : 1;
+    const alternating = referencePlans.length > 0;
+    const coverageReserve = answers.recovery === "faible" ? 0 : alternating || program.length >= 4 ? 2 : 1;
     const limitations = (answers.limitations || []).filter(value => value !== "aucune");
     const keyOf = ({ category, portion }) => `${category}|${portion}`;
     const targetsOf = exercises => new Set(exercises.filter(ex => !ex.isRenforcement).flatMap(getStatMuscleTargets).map(keyOf));
@@ -2240,8 +2266,9 @@ function improveWeeklyCoverage(program, answers, options = {}) {
     const candidateTargets = candidates.map(ex => ({ ex, targets: targetsOf([ex]) }));
     const plans = days.map(planFor);
     const dailyTargets = plans.map(plan => targetsOf(plan.exercises));
+    const referenceTargets = new Set(referencePlans.flatMap(plan => [...targetsOf(plan.exercises)]));
     for (let attempt = 0; attempt < allTargets.length; attempt++) {
-        const covered = new Set(dailyTargets.flatMap(targets => [...targets]));
+        const covered = new Set([...referenceTargets, ...dailyTargets.flatMap(targets => [...targets])]);
         const missing = new Set(allTargets.filter(target => !covered.has(target)));
         if (!missing.size) break;
         const useful = candidateTargets.filter(({ targets }) => [...targets].some(target => missing.has(target)));
@@ -2249,7 +2276,7 @@ function improveWeeklyCoverage(program, answers, options = {}) {
         let best = null;
         days.forEach((day, index) => {
             if (frozenDays.has(index)) return;
-            const otherTargets = new Set(dailyTargets.flatMap((targets, i) => i === index ? [] : [...targets]));
+            const otherTargets = new Set([...referenceTargets, ...dailyTargets.flatMap((targets, i) => i === index ? [] : [...targets])]);
             const names = new Set(day.exercises.map(ex => ex.name));
             const currentMajor = new Set(plans[index].exercises.map(ex => ex.category).filter(group => MAJOR_TRAINING_GROUPS.includes(group)));
             const currentLoad = plans[index].sets.reduce((sum, sets) => sum + sets, 0);
@@ -2257,13 +2284,14 @@ function improveWeeklyCoverage(program, answers, options = {}) {
                 if (names.has(ex.name) || !isGroupAllowedOnDay(ex.category, day.title)) return;
                 if (isAdvancedMovement(ex) && day.exercises.some(isAdvancedMovement)) return;
                 const replacementIndices = day.exercises.flatMap((current, i) =>
-                    i > 0 && (current.category === ex.category || !MAJOR_TRAINING_GROUPS.includes(current.category)) &&
+                    i > 0 && (current.category === ex.category || !MAJOR_TRAINING_GROUPS.includes(current.category) ||
+                        (alternating && day.exercises.some(other => other !== current && other.category === current.category))) &&
                         !protectedIds.has(current.id) && !current.manualSwap && !current.isRenforcement &&
                         (!isStableAnchorExercise(current) || (preserveOrder && current.category === ex.category &&
-                            isStableAnchorExercise(ex) && day.exercises.some(other => other !== current &&
-                                other.category === current.category && isStableAnchorExercise(other)))) &&
+                            isStableAnchorExercise(ex) && (alternating || day.exercises.some(other => other !== current &&
+                                other.category === current.category && isStableAnchorExercise(other))))) &&
                         !(day.manualSupersets && getGroupForIndex(day.supersets, i)) ? [i] : []);
-                if (day.exercises.length < maxExercises) replacementIndices.push(day.exercises.length);
+                if (!alternating && day.exercises.length < maxExercises) replacementIndices.push(day.exercises.length);
                 replacementIndices.forEach(position => {
                     const previous = day.exercises[position];
                     const sameGroup = previous?.category === ex.category;
@@ -2379,9 +2407,7 @@ function getSwapAlternatives(program, answers, dayIndex, exIndex) {
     const rest = candidates.filter((e) => normalizeSubgroup(e.subgroup) !== currentNorm);
     return [...sameSubgroup, ...rest];
 }
-function applySwapChoice(program, answers, dayIndex, exIndex, chosen) {
-    const day = program[dayIndex];
-    const current = day.exercises[exIndex];
+function applySwapChoice(program, answers, dayIndex, exIndex, chosen, current = program[dayIndex].exercises[exIndex]) {
     return program.map((d, di) => {
         if (di !== dayIndex)
             return d;
@@ -2871,13 +2897,13 @@ function analyzeProgram(program, answers = {}, week = 1, adjustment, plans = get
     if (risk.length && (answers?.limitations || []).some(x => x !== 'aucune'))
         strengths.push('Exercices filtrés selon tes limitations');
     const portionCoverage = getPortionCoverage(plans);
-    const weeklyCoverage = getWeeklyPortionCoverage(program, answers, week, adjustment, plans);
+    const weeklyCoverage = getPlannedCoverage(program, answers, week, adjustment, plans);
     const missingAvailablePortions = weeklyCoverage.rows.filter(row => row.available && row.sets === 0);
     if (missingAvailablePortions.length) {
-        issues.push(`Couverture hebdomadaire : ${weeklyCoverage.coveredCount}/${weeklyCoverage.availableCount} portions accessibles`);
+        issues.push(`Couverture · ${weeklyCoverage.periodLabel} · ${weeklyCoverage.coveredCount}/${weeklyCoverage.availableCount} portions accessibles`);
     }
     else if (weeklyCoverage.availableCount) {
-        strengths.push('Toutes les portions accessibles sont couvertes cette semaine');
+        strengths.push(`Toutes les portions accessibles sont couvertes · ${weeklyCoverage.periodLabel}`);
     }
     Object.entries(PORTION_REQUIREMENTS).forEach(([cat, required]) => {
         if (!(muscles[cat] > 0)) return;
@@ -3384,7 +3410,8 @@ function ProgramBuilder() {
     const currentProgramAnalysis = mode === "result" && program
         ? analyzeProgram(program, answers, currentWeek, currentVolumePlan.adjustment, currentVolumePlan.days)
         : null;
-    const activeDay = currentDay;
+    const scheduledProgram = getProgramForWeek(program, answers, currentWeek);
+    const activeDay = scheduledProgram?.[selectedDayIndex];
     const displayedProgram = program?.map((day, dayIndex) => {
         const plan = currentVolumePlan.days[dayIndex];
         const exercises = withPlannedSets(plan.exercises, plan.sets, answers);
@@ -3394,7 +3421,8 @@ function ProgramBuilder() {
     const activePlan = currentVolumePlan.days[selectedDayIndex];
     const sessionExercises = activePlan ? [
         ...activePlan.exercises,
-        ...activeDay.exercises.filter(ex => !activePlan.exercises.includes(ex) &&
+        ...[...new Map([...activeDay.exercises, ...currentDay.exercises].map(ex => [ex.id, ex])).values()].filter(ex =>
+            !activePlan.exercises.some(planned => planned.id === ex.id) &&
             dayData?.current?.exercises?.[ex.id]?.some(set => set.done || set.weight || set.reps)),
         ...((dayData?.current?.sessionExercises || []).filter(extra => !activeDay.exercises.some(ex => ex.id === extra.id))),
     ] : [];
@@ -3993,10 +4021,11 @@ function ProgramBuilder() {
                     }
                 });
             });
-            const portionCoverage = getWeeklyPortionCoverage(program || [], answers, rotationWeek, volumeAdjustment);
+            const portionCoverage = getPlannedCoverage(program || [], answers, rotationWeek, volumeAdjustment, volumePlans);
             const programCoverageRows = portionCoverage.rows;
             const weeklyImprovements = getWeeklyExerciseImprovements(exerciseHistory, localDateKey(cycleRange.monday), localDateKey(nextCycleWeek));
-            const lightPortions = programCoverageRows.filter(row => row.available).flatMap(row => {
+            const lightPortions = getWeeklyPortionCoverage(program || [], answers, rotationWeek, volumeAdjustment, volumePlans).rows
+                .filter(row => row.available && row.sets > 0).flatMap(row => {
                 const completed = completedCyclePortions[row.category]?.[row.portion] || 0;
                 return completed < 2 ? [{ ...row, completed }] : [];
             });
@@ -4032,7 +4061,8 @@ function ProgramBuilder() {
                 }
             });
             const programExerciseById = {};
-            (program || []).forEach(day => (day.exercises || []).forEach(ex => { programExerciseById[ex.id] = ex; }));
+            const activeProgram = getProgramForWeek(program, answers, rotationWeek);
+            (activeProgram || []).forEach(day => day.exercises.forEach(ex => { programExerciseById[ex.id] = ex; }));
             const exerciseProgress = Object.values(exerciseHistory).map(h => {
                 h.sessions.sort((a,b) => a.date.localeCompare(b.date));
                 const first = h.sessions[0], last = h.sessions[h.sessions.length - 1];
@@ -4051,6 +4081,7 @@ function ProgramBuilder() {
                 sessionsThisWeek, sessionsPreviousWeek, totalSessionsThisWeek, freestyleSessionsThisWeek,
                 plannedSessions, adherence, prs, volumeByCategory, volumeByPortion, reinforcementSets,
                 programCoverage: programCoverageRows, programCoverageScore: portionCoverage.score, programCoverageWeek: rotationWeek,
+                programCoveragePeriod: portionCoverage.periodLabel,
                 plannedMuscleVolume: cycleVolume.byGroup, completedMuscleVolume: completedCycleVolume,
                 weeklyImprovements, lightPortions, volumeAdjustment,
                 realizedCoverageScore, bodyweightLog: Array.isArray(bwLog) ? bwLog : [], calorieLog: Array.isArray(kcalLog) ? kcalLog : [],
@@ -4297,7 +4328,8 @@ function ProgramBuilder() {
     }
     function chooseSwap(dayIndex, exIndex, chosen) {
         setProgram((prev) => {
-            const next = applySwapChoice(prev, answers, dayIndex, exIndex, chosen);
+            const current = getProgramForWeek(prev, answers, currentWeek)[dayIndex].exercises[exIndex];
+            const next = applySwapChoice(prev, answers, dayIndex, exIndex, chosen, current);
             persistProgramSnapshot(next);
             return next;
         });
@@ -6096,10 +6128,10 @@ function ProgramBuilder() {
                     })),
                 React.createElement("div", { style: { background: colors.surface, border: `1px solid ${colors.border}` }, className: "rounded-lg p-4" },
                     React.createElement("div", { className: "flex items-center justify-between mb-2" },
-                        React.createElement("div", { style: { fontFamily: displayFont, fontSize: 12, color: colors.faint, letterSpacing: "0.03em" }, className: "uppercase" }, "Couverture prévue cette semaine"),
+                        React.createElement("div", { style: { fontFamily: displayFont, fontSize: 12, color: colors.faint, letterSpacing: "0.03em" }, className: "uppercase" }, "Couverture prévue"),
                         React.createElement("span", { className: "mc-v12-pill" }, `${dashboardData?.programCoverageScore || 0}%`)),
                     React.createElement("div", { style: { fontSize: 11, color: colors.muted, marginBottom: 10 } },
-                        `Semaine ${dashboardData?.programCoverageWeek || 1} · portions accessibles selon ton niveau, ton matériel et tes limitations.`),
+                        `Période : ${dashboardData?.programCoveragePeriod || "semaine 1"} · portions accessibles selon ton niveau, ton matériel et tes limitations.`),
                     React.createElement("div", { className: "grid grid-cols-1 gap-2" },
                         Object.entries(PORTION_REQUIREMENTS).filter(([cat]) => (dashboardData?.programCoverage || []).some(v => v.category === cat)).map(([cat, required]) => {
                             const rows = (dashboardData?.programCoverage || []).filter(v => v.category === cat);
@@ -6625,7 +6657,7 @@ function ProgramBuilder() {
                     React.createElement("div", { className: "item" }, React.createElement("span", { className: "label" }, "Durée moyenne"), React.createElement("span", { className: "value" }, `${averageMinutes} min`)),
                     React.createElement("div", { className: "item" }, React.createElement("span", { className: "label" }, "Cohérence"), React.createElement("span", { className: "value", style: { color: quality.score >= 80 ? colors.good : "#F2C94C" } }, `${quality.score}/100`)),
                     React.createElement("div", { className: "item", style: { alignItems: "flex-start", gap: 8 } },
-                        React.createElement("span", { className: "label" }, `Portions couvertes · semaine ${currentWeek}`),
+                        React.createElement("span", { className: "label" }, `Portions couvertes · ${coverage.periodLabel}`),
                         React.createElement("span", { className: "value" }, `${coverage.coveredCount}/${coverage.availableCount}`)),
                     currentWeek !== CYCLE_WEEKS && underTwo.length > 0 && React.createElement("details", { className: "item" },
                         React.createElement("summary", { className: "label" }, "Groupes travaillés moins de deux fois"),
@@ -6645,6 +6677,8 @@ function ProgramBuilder() {
                 React.createElement("div", { style: { color: colors.faint, fontSize: 10, marginTop: 8 } },
                     "Séries prévues selon ton objectif et ta récupération. Si le volume reste stable, la progression se fait en répétitions ou en charge."),
                 React.createElement("div", { className: "mc-v12-muted mt-1" }, `S${coachStatus.week} · ${coachStatus.label}. ${coachStatus.note}`),
+                program.length <= 3 && React.createElement("div", { className: "mc-v12-muted mt-1" },
+                    "Les variantes alternent d’une semaine à l’autre quand elles complètent la couverture."),
                 currentVolumePlan.adjustment && React.createElement("div", { className: "mc-v12-muted mt-1" },
                     `${currentVolumePlan.adjustment.name} · ${currentVolumePlan.adjustment.delta > 0 ? "+1 série après trois performances stables" : "−1 série après deux séances à l’échec"}`)),
             (() => {
@@ -6707,12 +6741,12 @@ function ProgramBuilder() {
                             React.createElement("div", { style: { fontFamily: displayFont, fontSize: 10, color: colors.faint, letterSpacing: "0.03em" }, className: "uppercase mb-1" },
                                 "Alternatives \u00B7 ",
                                 ex.category),
-                            getSwapAlternatives(program, answers, di, ei).slice(0, 6).map((alt) => (React.createElement("button", { key: alt.name, onClick: () => chooseSwap(di, ei, alt), className: "text-left rounded px-2 py-2", style: { background: colors.surfaceAlt, border: `1px solid ${colors.border}` } },
+                            getSwapAlternatives(scheduledProgram, answers, di, ei).slice(0, 6).map((alt) => (React.createElement("button", { key: alt.name, onClick: () => chooseSwap(di, ei, alt), className: "text-left rounded px-2 py-2", style: { background: colors.surfaceAlt, border: `1px solid ${colors.border}` } },
                                 React.createElement("div", { style: { fontFamily: displayFont, fontSize: 13, color: colors.text } }, alt.name),
                                 React.createElement("div", { style: { fontFamily: dataFont, fontSize: 10, color: normalizeSubgroup(alt.subgroup) === normalizeSubgroup(ex.subgroup) ? colors.good : colors.faint } },
                                     alt.subgroup,
                                     normalizeSubgroup(alt.subgroup) === normalizeSubgroup(ex.subgroup) ? " · même partie ✓" : "")))),
-                            getSwapAlternatives(program, answers, di, ei).length === 0 && (React.createElement("div", { style: { color: colors.faint, fontSize: 12 } }, "Aucune autre alternative disponible avec ton mat\u00E9riel.")))),
+                            getSwapAlternatives(scheduledProgram, answers, di, ei).length === 0 && (React.createElement("div", { style: { color: colors.faint, fontSize: 12 } }, "Aucune autre alternative disponible avec ton mat\u00E9riel.")))),
                         React.createElement("div", { style: { color: colors.muted, fontSize: 11, fontStyle: "italic" } }, ex.cue)));
                 }))))),
             React.createElement("div", { className: "flex gap-2 mt-2" },
@@ -6893,12 +6927,12 @@ function ProgramBuilder() {
                                 React.createElement("div", { style: { fontFamily: displayFont, fontSize: 10, color: colors.faint, letterSpacing: "0.03em" }, className: "uppercase mb-1" },
                                     "Alternatives \u00B7 ",
                                     ex.category),
-                                getSwapAlternatives(program, answers, selectedDayIndex, programExerciseIndex).slice(0, 6).map((alt) => (React.createElement("button", { key: alt.name, onClick: () => chooseSwap(selectedDayIndex, programExerciseIndex, alt), className: "text-left rounded px-2 py-2", style: { background: colors.surface, border: `1px solid ${colors.border}` } },
+                                getSwapAlternatives(scheduledProgram, answers, selectedDayIndex, programExerciseIndex).slice(0, 6).map((alt) => (React.createElement("button", { key: alt.name, onClick: () => chooseSwap(selectedDayIndex, programExerciseIndex, alt), className: "text-left rounded px-2 py-2", style: { background: colors.surface, border: `1px solid ${colors.border}` } },
                                     React.createElement("div", { style: { fontFamily: displayFont, fontSize: 13, color: colors.text } }, alt.name),
                                     React.createElement("div", { style: { fontFamily: dataFont, fontSize: 10, color: normalizeSubgroup(alt.subgroup) === normalizeSubgroup(ex.subgroup) ? colors.good : colors.faint } },
                                         alt.subgroup,
                                         normalizeSubgroup(alt.subgroup) === normalizeSubgroup(ex.subgroup) ? " · même partie ✓" : "")))),
-                                getSwapAlternatives(program, answers, selectedDayIndex, programExerciseIndex).length === 0 && (React.createElement("div", { style: { color: colors.faint, fontSize: 12 } }, "Aucune autre alternative disponible avec ton mat\u00E9riel.")))),
+                                getSwapAlternatives(scheduledProgram, answers, selectedDayIndex, programExerciseIndex).length === 0 && (React.createElement("div", { style: { color: colors.faint, fontSize: 12 } }, "Aucune autre alternative disponible avec ton mat\u00E9riel.")))),
                             React.createElement("div", { style: { color: colors.muted, fontSize: 12, fontStyle: "italic", marginBottom: 10 } }, ex.cue),
                             React.createElement(ExerciseTargetCard, { exercise: ex, previous: prevSets, target: getGuidedSetTarget(ex), colors }),
                             history.length > 0 && (React.createElement("div", { className: "flex items-center gap-2 mb-2", style: { height: 26 } },
@@ -7086,10 +7120,10 @@ function ProgramBuilder() {
                             x)))); })(),
                 Number.isInteger(exerciseDetail.programDayIndex) && Number.isInteger(exerciseDetail.programExerciseIndex) && React.createElement("div", { className: "mc-v12-card mt-3" },
                     React.createElement("h3", null, "Autres exercices adaptés"),
-                    getSwapAlternatives(program, answers, exerciseDetail.programDayIndex, exerciseDetail.programExerciseIndex).slice(0, 6).map(alt => React.createElement("button", { key: alt.name, onClick: () => chooseSwap(exerciseDetail.programDayIndex, exerciseDetail.programExerciseIndex, alt), className: "w-full text-left rounded px-3 py-2 mt-2", style: { background: '#081725', border: '1px solid #1D405B' } },
+                    getSwapAlternatives(scheduledProgram, answers, exerciseDetail.programDayIndex, exerciseDetail.programExerciseIndex).slice(0, 6).map(alt => React.createElement("button", { key: alt.name, onClick: () => chooseSwap(exerciseDetail.programDayIndex, exerciseDetail.programExerciseIndex, alt), className: "w-full text-left rounded px-3 py-2 mt-2", style: { background: '#081725', border: '1px solid #1D405B' } },
                         React.createElement("div", { style: { fontFamily: displayFont, fontSize: 13, color: '#F4F8FC' } }, alt.name),
                         React.createElement("div", { className: "mc-v12-muted", style: { fontSize: 10 } }, alt.subgroup || alt.category))),
-                    getSwapAlternatives(program, answers, exerciseDetail.programDayIndex, exerciseDetail.programExerciseIndex).length === 0
+                    getSwapAlternatives(scheduledProgram, answers, exerciseDetail.programDayIndex, exerciseDetail.programExerciseIndex).length === 0
                         && React.createElement("div", { className: "mc-v12-muted mt-2" }, "Aucune autre alternative disponible avec ton matériel et tes limitations.")),
                 React.createElement("div", { className: "flex gap-2 mt-3" },
                     React.createElement("a", { href: getDemoUrl(exerciseDetail), target: "_blank", rel: "noopener noreferrer", className: "mc-v12-btn", style: { flex: 1, textAlign: 'center', textDecoration: 'none' } }, "\uD83C\uDFA5 Vid\u00E9o"),
