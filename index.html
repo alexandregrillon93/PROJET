@@ -2325,38 +2325,6 @@ function parseRepRange(target) {
     return { min: 8, max: 12 };
 }
 const COMPOUND_CATEGORIES = ["Jambes", "Ischios/Fessiers", "Dos", "Pectoraux"];
-function suggestProgression(ex, prevSets, prevRpe) {
-    if (ex.isTime)
-        return null; // timed exercises (planche...) progress by duration, not load — skip for now
-    if (!prevSets || !prevSets.length)
-        return null;
-    const validSets = prevSets.filter((s) => s.weight && s.reps);
-    if (!validSets.length)
-        return null;
-    const best = validSets.reduce((a, b) => {
-        const aw = parseFloat(a.weight), bw = parseFloat(b.weight);
-        if (bw > aw)
-            return b;
-        if (bw === aw && parseFloat(b.reps) > parseFloat(a.reps))
-            return b;
-        return a;
-    });
-    const w = parseFloat(best.weight);
-    const r = parseInt(best.reps, 10);
-    if (isNaN(w) || isNaN(r))
-        return null;
-    const { min, max } = parseRepRange(ex.target);
-    const increment = COMPOUND_CATEGORIES.includes(ex.category) ? 2.5 : 1;
-    if (prevRpe === "echec") {
-        return { weight: w, reps: Math.max(min, r), label: "Consolide — séance dure la dernière fois" };
-    }
-    if (r >= max) {
-        const bigJump = prevRpe === "facile";
-        const nextWeight = Math.round((w + (bigJump ? increment * 2 : increment)) * 2) / 2;
-        return { weight: nextWeight, reps: min, label: "Monte le poids" };
-    }
-    return { weight: w, reps: Math.min(max, r + 1), label: "Même poids, +1 rep" };
-}
 async function readExerciseSessions() {
     const read = async (key) => {
         try {
@@ -2396,34 +2364,60 @@ function getExerciseHistory(sessions, ex) {
     });
 }
 function formatExerciseHistorySets(ex, sets) {
+    const weights = new Set(sets.map(set => String(set.weight ?? "")));
+    if (weights.size === 1) {
+        const weight = [...weights][0];
+        const prefix = !isBodyweightExercise(ex) && weight !== "" ? `${weight} kg · ` : "";
+        return `${prefix}${sets.map(set => set.reps).join(" / ")} ${ex.isTime ? "s" : "reps"}`;
+    }
     return sets.map((set) => {
         const result = `${set.reps} ${ex.isTime ? "s" : "reps"}`;
         return isBodyweightExercise(ex) || set.weight == null || set.weight === "" ? result : `${set.weight} kg × ${result}`;
     }).join(" / ");
 }
-function getSetTarget(ex, previousSets, rpe, maintain) {
+function ExerciseTargetCard({ exercise, previous, target, colors }) {
+    if (!target) return null;
+    return React.createElement("div", { className: "rounded px-2 py-2 mb-2", style: { background: `${colors.good}1a`, border: `1px solid ${colors.good}`, fontSize: 11 } },
+        React.createElement("div", { style: { color: colors.muted } }, `Dernière fois · ${formatExerciseHistorySets(exercise, previous)}`),
+        React.createElement("strong", null, `Cible par série · ${formatExerciseHistorySets(exercise, target.sets)}`),
+        React.createElement("div", { style: { color: colors.good, marginTop: 3 } }, target.label));
+}
+function getSetTarget(ex, previousSets, rpe, maintain, count = parseSetCount(ex.target)) {
     const validSets = previousSets.filter((set) => Number.isFinite(Number(set?.reps)) && Number(set.reps) > 0 &&
         (isBodyweightExercise(ex) || (String(set?.weight ?? "").trim() !== "" &&
             Number.isFinite(Number(set.weight)) && Number(set.weight) >= 0)));
     if (!validSets.length)
         return null;
-    const previous = validSets[0];
-    if (ex.isTime || isBodyweightExercise(ex) || maintain || rpe === "echec") {
-        const { max } = parseRepRange(ex.target);
-        const addRep = isBodyweightExercise(ex) && !ex.isTime && !maintain && rpe !== "echec" && Number(previous.reps) < max;
+    const { min, max } = parseRepRange(ex.target);
+    const bodyweight = isBodyweightExercise(ex);
+    const hold = maintain || rpe === "echec" || rpe === "difficile";
+    const firstWeight = Number(validSets[0].weight);
+    const increase = !hold && !ex.isTime && !bodyweight && firstWeight > 0 &&
+        validSets.length >= Math.max(2, count) && validSets.every(set => Number(set.weight) === firstWeight && Number(set.reps) >= max);
+    const increment = COMPOUND_CATEGORIES.includes(ex.category) ? 2.5 : 1;
+    const nextWeight = Math.round((firstWeight + increment) * 2) / 2;
+    const sets = Array.from({ length: count }, (_, index) => {
+        const reference = validSets[index] || validSets.at(-1);
+        const reps = Number(reference.reps);
         return {
-            weight: isBodyweightExercise(ex) ? "" : previous.weight,
-            reps: Number(previous.reps) + (addRep ? 1 : 0),
-            label: addRep ? "+1 répétition" : "Garde ta dernière cible",
+            weight: bodyweight ? "" : increase ? nextWeight : reference.weight,
+            reps: increase ? min : hold || ex.isTime || index >= validSets.length ? reps : Math.max(reps, Math.min(max, reps + 1)),
         };
-    }
-    return suggestProgression(ex, validSets.map((set) => ({ ...set, weight: String(set.weight) })), rpe);
+    });
+    const addedReps = sets.some((set, index) => set.reps > Number(validSets[index]?.reps));
+    const label = increase ? "Toutes les séries ont atteint le haut de la fourchette"
+        : maintain ? "Récupération · garde les repères de la dernière séance"
+        : hold ? "Séance difficile · consolide tes séries"
+        : addedReps ? "Même charge · vise une répétition de plus sur les séries sous la cible"
+        : "Garde les repères de la dernière séance";
+    return { sets, label };
 }
 function buildSessionSets(current, count, target) {
     const sets = (current || []).slice();
     while (sets.length < count) {
-        sets.push(target
-            ? { weight: String(target.weight), reps: String(target.reps), coachPrefilled: true }
+        const suggested = target?.sets[sets.length] || target?.sets.at(-1);
+        sets.push(suggested
+            ? { weight: String(suggested.weight), reps: String(suggested.reps), coachPrefilled: true }
             : { weight: "", reps: "" });
     }
     return sets;
@@ -2437,45 +2431,20 @@ function getLoggedExercises(exercises) {
     });
     return logged;
 }
-function getAdaptiveCoach(ex, history, previous, week, goal, recovery) {
-    const sessions = (history || []).filter((s) => s?.exercises?.[ex.id]?.length).slice(-4);
-    const latest = sessions[sessions.length - 1] || previous;
-    const latestSets = latest?.exercises?.[ex.id] || [];
-    const validLatest = latestSets.filter((s) => s.weight !== "" && s.reps !== "");
-    const rpe = latest?.rpe || null;
-    if (week === CYCLE_WEEKS) {
-        return { tone: "good", title: "Deload automatique", text: "Réduis la charge si nécessaire, garde une exécution propre et ne cherche aucun record.", action: "Récupération" };
-    }
-    if (!validLatest.length) {
-        return { tone: "neutral", title: "Première référence", text: "Choisis une charge qui te laisse environ 2–3 reps en réserve. Cette séance servira de référence.", action: "Établir la base" };
-    }
-    if (rpe === "echec") {
-        return { tone: "warn", title: "Consolidation", text: "Dernière séance à l'échec : garde le même poids et vise la même qualité avant de surcharger.", action: "Pas de surcharge" };
-    }
-    const top = validLatest.reduce((best, s) => {
-        const w = parseFloat(s.weight) || 0, r = parseFloat(s.reps) || 0;
-        const bw = parseFloat(best.weight) || 0, br = parseFloat(best.reps) || 0;
-        return w > bw || (w === bw && r > br) ? s : best;
-    }, validLatest[0]);
-    const topR = parseFloat(top.reps) || 0;
-    const range = parseRepRange(ex.target);
-    const recentTops = sessions.map((sess) => {
-        const sets = (sess.exercises?.[ex.id] || []).filter((s) => s.weight !== "" && s.reps !== "");
-        if (!sets.length)
-            return null;
-        return sets.reduce((best, s) => Math.max(best, parseFloat(s.weight) || 0), 0);
-    }).filter((x) => x > 0);
-    const plateau = recentTops.length >= 3 && new Set(recentTops.slice(-3)).size === 1 && topR < range.max;
-    if (plateau) {
-        return { tone: "warn", title: "Stagnation détectée", text: "La charge stagne depuis 3 séances. Garde le poids, ajoute seulement 1 rep si la technique reste propre.", action: "Briser le plateau" };
-    }
-    if (recovery === "faible") {
-        return { tone: "neutral", title: "Journée récupération", text: "Ta récupération habituelle est basse : priorité à la qualité. Ne force pas la surcharge si les séries ralentissent.", action: "Qualité > charge" };
-    }
-    if (topR >= range.max) {
-        return { tone: "good", title: "Surcharge validée", text: `Le haut de la fourchette est atteint (${range.max} reps). Monte légèrement la charge et repars vers ${range.min} reps.`, action: "+ charge" };
-    }
-    return { tone: "good", title: "Double progression", text: `Même charge : vise ${Math.min(range.max, topR + 1)} reps. Monte seulement quand ${range.max} reps sont propres.`, action: "+ 1 rep" };
+function getWeeklyExerciseImprovements(history, startKey, endKey) {
+    return Object.values(history).flatMap(exercise => {
+        const sessions = exercise.sessions.slice().sort((a, b) => a.date.localeCompare(b.date));
+        const current = sessions.filter(session => session.date >= startKey && session.date < endKey);
+        const latest = current.at(-1);
+        const previous = sessions.filter(session => session.date < startKey).at(-1) || (current.length > 1 ? current[0] : null);
+        if (!previous || !latest) return [];
+        if (exercise.isTime || exercise.isBodyweight || latest.weight === previous.weight) {
+            const gain = latest.reps - previous.reps;
+            return gain > 0 ? [{ name: exercise.name, detail: `+${gain} ${exercise.isTime ? "s" : "reps"}` }] : [];
+        }
+        return latest.weight > previous.weight && latest.e1rm > previous.e1rm
+            ? [{ name: exercise.name, detail: `+${Number((latest.weight - previous.weight).toFixed(2))} kg` }] : [];
+    });
 }
 function isDeloadWeek(startDateIso) {
     return weekNumber(startDateIso) === CYCLE_WEEKS;
@@ -3187,7 +3156,7 @@ function StatsProgressionCard({ data, colors, displayFont, dataFont }) {
       React.createElement("div", { className: "flex items-center justify-between gap-2" }, React.createElement("strong", { style: { fontSize: 12, fontFamily: displayFont } }, h.name), React.createElement("span", { style: { fontSize: 10, color: colors.faint } }, `${h.sessions.length} séance${h.sessions.length > 1 ? "s" : ""}`)),
     React.createElement("div", { className: "flex items-center justify-between mt-1", style: { fontSize: 11, fontFamily: dataFont } }, React.createElement("span", null, formatProgressionMetric(h)), React.createElement("span", { style: { color: h.weightDelta > 0 || h.repsDelta > 0 ? colors.good : h.weightDelta < 0 || h.repsDelta < 0 ? colors.accent : colors.muted } }, `${h.isTime || h.isBodyweight ? `${h.repsDelta > 0 ? "+" : ""}${h.repsDelta} reps` : `${h.weightDelta > 0 ? "+" : ""}${h.weightDelta} kg · ${h.repsDelta > 0 ? "+" : ""}${h.repsDelta} reps`}`)),
       h.last?.e1rm > 0 ? React.createElement("div", { style: { color: colors.faint, fontSize: 10, marginTop: 2 } }, `1RM estimé ${h.last.e1rm} kg · évolution ${h.e1rmDelta > 0 ? "+" : ""}${h.e1rmDelta} kg`) : null,
-      h.recommendation ? React.createElement("div", { style: { marginTop: 7, padding: "6px 8px", borderRadius: 8, background: h.recommendation.label.includes("Monte") ? "rgba(39,216,155,.10)" : "rgba(18,184,255,.10)", border: `1px solid ${h.recommendation.label.includes("Monte") ? colors.good : colors.accent}55`, fontSize: 10, color: colors.text } }, `Prochaine fois : ${h.recommendation.weight != null ? `${h.recommendation.weight} kg × ${h.recommendation.reps}` : `${h.recommendation.reps} reps`} · ${h.recommendation.label}`) : null)) : React.createElement("div", { className: "mc-v12-muted" }, "Valide des séries avec une charge pour suivre la progression exercice par exercice."));
+      h.recommendation && React.createElement("div", { className: "mc-v12-muted mt-2" }, `Prochaine cible · ${formatExerciseHistorySets(h, h.recommendation.sets)}`))) : React.createElement("div", { className: "mc-v12-muted" }, "Valide des séries pour suivre la progression exercice par exercice."));
 }
 function StatsHistoryCard({ data, colors, displayFont, dataFont }) {
   const rows = data?.weeklyHistory || [];
@@ -4035,11 +4004,15 @@ function ProgramBuilder() {
             const volumeByCategory = Object.entries(setsByCategory).map(([category, sets]) => ({ category, sets, volume: Math.round(volByCategory[category] || 0) })).sort((a,b) => b.volume - a.volume || b.sets - a.sets);
             const volumeByPortion = Object.entries(setsByPortion).flatMap(([category, portions]) => Object.entries(portions).map(([portion, sets]) => ({ category, portion, sets }))).sort((a,b) => b.sets - a.sets);
             const volumeAdjustment = getCycleVolumeAdjustment(program, answers, rotationWeek, programStartDate, mergedLog);
-            const cycleVolume = summarizePlannedVolume((program || []).map((_, index) =>
-                getDayPlanForWeek(program, index, answers, rotationWeek, volumeAdjustment)));
+            const volumePlans = (program || []).map((_, index) => getDayPlanForWeek(program, index, answers, rotationWeek, volumeAdjustment));
+            const cycleVolume = summarizePlannedVolume(volumePlans);
+            const nextSetCounts = new Map();
+            volumePlans.forEach(plan => plan.exercises.forEach((ex, index) =>
+                nextSetCounts.set(ex.id, Math.max(nextSetCounts.get(ex.id) || 0, plan.sets[index]))));
             const cycleRange = cycleWeekRange(programAnchor, rotationWeek);
             const nextCycleWeek = cycleWeekRange(programAnchor, rotationWeek + 1).monday;
             const completedCycleVolume = {};
+            const completedCyclePortions = {};
             canonical.forEach(entry => {
                 if (entry.dateObj < cycleRange.monday || entry.dateObj >= nextCycleWeek ||
                     (programStartDate && new Date(entry.session?.date || entry.dateObj) < new Date(programStartDate)) ||
@@ -4048,11 +4021,22 @@ function ProgramBuilder() {
                     if (!Array.isArray(sets)) return;
                     const info = { ...idToInfo[id], ...entry.exerciseMeta?.[id] };
                     const count = sets.filter(set => isSetPerformed(set, info)).length;
-                    if (count) addMuscleVolume(completedCycleVolume, info, count);
+                    if (count) {
+                        addMuscleVolume(completedCycleVolume, info, count);
+                        getStatMuscleTargets(info).forEach(({ category, portion }) => {
+                            completedCyclePortions[category] ||= {};
+                            completedCyclePortions[category][portion] = (completedCyclePortions[category][portion] || 0) + count;
+                        });
+                    }
                 });
             });
             const portionCoverage = getWeeklyPortionCoverage(program || [], answers, rotationWeek, volumeAdjustment);
             const programCoverageRows = portionCoverage.rows;
+            const weeklyImprovements = getWeeklyExerciseImprovements(exerciseHistory, localDateKey(cycleRange.monday), localDateKey(nextCycleWeek));
+            const lightPortions = programCoverageRows.filter(row => row.available).flatMap(row => {
+                const completed = completedCyclePortions[row.category]?.[row.portion] || 0;
+                return completed < 2 ? [{ ...row, completed }] : [];
+            });
             const requiredPortions = programCoverageRows.filter(row => row.available).map(({ category, portion }) => ({ category, portion }));
             const realizedCoverageScore = requiredPortions.length ? Math.round(requiredPortions.reduce((sum, p) => sum + ((setsByPortion[p.category]?.[p.portion] || 0) >= 2 ? 1 : (setsByPortion[p.category]?.[p.portion] || 0) > 0 ? 0.5 : 0), 0) / requiredPortions.length * 100) : 0;
             const volumeDeltaPct = previousWeekVolume > 0 ? Math.round(((weeklyVolume - previousWeekVolume) / previousWeekVolume) * 100) : null;
@@ -4090,7 +4074,9 @@ function ProgramBuilder() {
                 h.sessions.sort((a,b) => a.date.localeCompare(b.date));
                 const first = h.sessions[0], last = h.sessions[h.sessions.length - 1];
                 const sourceExercise = programExerciseById[h.id];
-                const recommendation = sourceExercise && last?.sets?.length ? suggestProgression(sourceExercise, last.sets, last.rpe) : null;
+                const recommendation = sourceExercise && last?.sets?.length ? getSetTarget(sourceExercise, last.sets, last.rpe,
+                    cycleWeek === CYCLE_WEEKS || answers.recovery === "faible",
+                    nextSetCounts.get(h.id) || parseSetCount(sourceExercise.target)) : null;
                 return { ...h, first, last, recommendation, weightDelta: last && first ? last.weight - first.weight : 0, repsDelta: last && first ? last.reps - first.reps : 0, e1rmDelta: last && first ? last.e1rm - first.e1rm : 0 };
             }).sort((a,b) => (b.sessions.length - a.sessions.length) || (b.last?.e1rm || b.last?.reps || 0) - (a.last?.e1rm || a.last?.reps || 0)).slice(0, 12);
 
@@ -4103,6 +4089,7 @@ function ProgramBuilder() {
                 plannedSessions, adherence, prs, volumeByCategory, volumeByPortion, reinforcementSets,
                 programCoverage: programCoverageRows, programCoverageScore: portionCoverage.score, programCoverageWeek: rotationWeek,
                 plannedMuscleVolume: cycleVolume.byGroup, completedMuscleVolume: completedCycleVolume,
+                weeklyImprovements, lightPortions, volumeAdjustment,
                 realizedCoverageScore, bodyweightLog: Array.isArray(bwLog) ? bwLog : [], calorieLog: Array.isArray(kcalLog) ? kcalLog : [],
                 neglected, sessionVolumes: sessionVolumes.slice(-8), exerciseProgress, weeklyHistory,
                 history: canonical.flatMap(e => Object.entries(e.exercises || {}).map(([exId, sets]) => ({ exId, sets, date: e.dateKey, ...(e.exerciseMeta?.[exId] || idToInfo[exId] || {}) }))),
@@ -4911,9 +4898,11 @@ function ProgramBuilder() {
         if (editingPrevious || !ex)
             return null;
         const previous = getExerciseHistory(exerciseSessions, ex).at(-1) || data?.previous;
-        const maintain = weekNumber(programStartDate) === CYCLE_WEEKS ||
+        const maintain = currentWeek === CYCLE_WEEKS ||
             answers?.recovery === "faible" || recoveryModifier(todayRecovery).tone === "warn";
-        return getSetTarget(ex, previous?.exercises?.[ex.id] || [], previous?.rpe, maintain);
+        const index = sessionExercises.findIndex(exercise => exercise.id === ex.id);
+        const count = getCurrentDaySetPlan()[index] || 1;
+        return getSetTarget(ex, previous?.exercises?.[ex.id] || [], previous?.rpe, maintain, count);
     }
     function getExSets(exId, data = dayData) {
         const index = sessionExercises.findIndex((e) => e.id === exId);
@@ -4928,7 +4917,7 @@ function ProgramBuilder() {
     }
     function getPrevSets(exId) {
         const ex = sessionExercises.find((exercise) => exercise.id === exId);
-        const previous = ex && getExerciseHistory(exerciseSessions, ex).at(-1);
+        const previous = ex && (getExerciseHistory(exerciseSessions, ex).at(-1) || dayData?.previous);
         return previous?.exercises?.[exId] || [];
     }
     function fillFromPrevious(exId) {
@@ -5992,13 +5981,7 @@ function ProgramBuilder() {
                             ex.rest,
                             "s")),
                     React.createElement("div", { style: { color: colors.muted, fontSize: 12, fontStyle: "italic", marginBottom: 10 } }, ex.cue),
-                    suggestion && (React.createElement("div", { className: "rounded px-2 py-1.5 mb-2 flex items-center justify-between", style: { background: `${colors.good}1a`, border: `1px solid ${colors.good}` } },
-                        React.createElement("span", { style: { fontFamily: dataFont, fontSize: 12, color: colors.text } },
-                            "Cible coach : ",
-                            React.createElement("strong", null,
-                                suggestion.weight === "" ? "" : `${suggestion.weight} kg × `,
-                                suggestion.reps, isTime ? " s" : " reps")),
-                        React.createElement("span", { style: { fontFamily: displayFont, fontSize: 10, color: colors.good } }, suggestion.label))),
+                    React.createElement(ExerciseTargetCard, { exercise: ex, previous: prevSets, target: suggestion, colors }),
                     history.length > 0 && React.createElement("details", { className: "mb-2", style: { fontFamily: dataFont, fontSize: 11, color: colors.muted } },
                         React.createElement("summary", { style: { cursor: "pointer", color: colors.accent } }, "Historique de l’exercice"),
                         history.slice().reverse().map((session) => React.createElement("div", { key: session.date },
@@ -6123,7 +6106,18 @@ function ProgramBuilder() {
                         React.createElement("div", { className: "mc-v12-muted mt-3" }, e.sessions < 3 ? 'Continue quelques séances pour que le coach puisse mesurer ta progression.' : e.delta == null ? 'Ajoute des pesées pour suivre ton évolution corporelle.' : `Le coach suit ton évolution depuis ${e.first} kg et ajuste progressivement le programme.`));
                 })()),
                 dashboardData?.plannedSessions > 0 && React.createElement("details", { className: "mc-v12-card" },
-                    React.createElement("summary", { className: "mc-section-title" }, `Volume par muscle · semaine ${dashboardData.programCoverageWeek}`),
+                    React.createElement("summary", { className: "mc-section-title" }, `Bilan du programme · semaine ${dashboardData.programCoverageWeek}`),
+                    React.createElement("div", { className: "mt-2", style: { fontWeight: 600, fontSize: 12 } }, "Exercices en progrès"),
+                    (dashboardData.weeklyImprovements || []).length > 0
+                        ? dashboardData.weeklyImprovements.map(({ name, detail }, index) =>
+                            React.createElement("div", { key: index, className: "mc-v12-muted" }, `${name} · ${detail}`))
+                        : React.createElement("div", { className: "mc-v12-muted" }, "Les progrès apparaissent après deux performances comparables."),
+                    dashboardData.volumeAdjustment && React.createElement("div", { className: "mc-v12-muted mt-2" },
+                        `Ajustement de la semaine · ${dashboardData.volumeAdjustment.name} · ${dashboardData.volumeAdjustment.delta > 0 ? "+1 série après trois performances stables" : "−1 série après deux séances à l’échec"}`),
+                    (dashboardData.lightPortions || []).length > 0 && React.createElement("details", { className: "mt-2" },
+                        React.createElement("summary", { style: { fontSize: 12 } }, `Portions avec moins de 2 séries réalisées (${dashboardData.lightPortions.length})`),
+                        dashboardData.lightPortions.map(row => React.createElement("div", { key: `${row.category}|${row.portion}`, className: "mc-v12-muted" },
+                            `${row.portion} · ${row.completed}/${row.sets} séries (réalisées/prévues)`))),
                     React.createElement("div", { className: "mc-v12-muted mt-2" }, "Séries du programme prévues et réalisées. Le travail indirect est indiqué entre parenthèses."),
                     Object.keys(PORTION_REQUIREMENTS).map(category => {
                         const planned = dashboardData.plannedMuscleVolume?.[category];
@@ -6907,7 +6901,6 @@ function ProgramBuilder() {
                     const cols = isTime ? "24px 1fr 34px" : isBodyweight ? "24px 1fr 1fr 34px" : "24px 1fr 1fr 1fr 34px";
                     const catColor = CATEGORY_COLORS[ex.category] || colors.accent;
                     const history = getExerciseHistory(exerciseSessions, ex);
-                    const adaptive = getAdaptiveCoach(ex, history, null, currentWeek, answers.goal, answers.recovery);
                     const series = getTopWeightSeries(ex.id);
                     const group = getGroupForIndex(activePlan?.supersets, exIndex);
                     const programExerciseIndex = activePlan.exerciseIndices[exIndex];
@@ -6953,28 +6946,7 @@ function ProgramBuilder() {
                                         normalizeSubgroup(alt.subgroup) === normalizeSubgroup(ex.subgroup) ? " · même partie ✓" : "")))),
                                 getSwapAlternatives(program, answers, selectedDayIndex, programExerciseIndex).length === 0 && (React.createElement("div", { style: { color: colors.faint, fontSize: 12 } }, "Aucune autre alternative disponible avec ton mat\u00E9riel.")))),
                             React.createElement("div", { style: { color: colors.muted, fontSize: 12, fontStyle: "italic", marginBottom: 10 } }, ex.cue),
-                            (() => {
-                                const toneColor = adaptive.tone === "good" ? colors.good : adaptive.tone === "warn" ? "#F2C94C" : colors.accent;
-                                return (React.createElement("div", { className: "rounded-lg px-2.5 py-2 mb-2", style: { background: `${toneColor}12`, border: `1px solid ${toneColor}55` } },
-                                    React.createElement("div", { className: "flex items-center justify-between gap-2" },
-                                        React.createElement("span", { style: { fontFamily: displayFont, fontSize: 11, color: toneColor, fontWeight: 700 } },
-                                            "\uD83E\uDDE0 ",
-                                            adaptive.title),
-                                        React.createElement("span", { style: { fontFamily: dataFont, fontSize: 9, color: colors.faint } }, adaptive.action)),
-                                    React.createElement("div", { style: { color: colors.muted, fontSize: 10, lineHeight: 1.35, marginTop: 3 } }, adaptive.text)));
-                            })(),
-                            (() => {
-                                const suggestion = getGuidedSetTarget(ex);
-                                if (!suggestion)
-                                    return null;
-                                return (React.createElement("div", { className: "rounded px-2 py-1.5 mb-2 flex items-center justify-between", style: { background: `${colors.good}1a`, border: `1px solid ${colors.good}` } },
-                                    React.createElement("span", { style: { fontFamily: dataFont, fontSize: 12, color: colors.text } },
-                                        "Cible coach : ",
-                                        React.createElement("strong", null,
-                                            suggestion.weight === "" ? "" : `${suggestion.weight} kg × `,
-                                            suggestion.reps, isTime ? " s" : " reps")),
-                                    React.createElement("span", { style: { fontFamily: displayFont, fontSize: 10, color: colors.good } }, suggestion.label)));
-                            })(),
+                            React.createElement(ExerciseTargetCard, { exercise: ex, previous: prevSets, target: getGuidedSetTarget(ex), colors }),
                             history.length > 0 && (React.createElement("div", { className: "flex items-center gap-2 mb-2", style: { height: 26 } },
                                 series.length >= 2 && React.createElement(Fragment, null,
                                     React.createElement(TrendingUp, { size: 12, color: colors.good }),
