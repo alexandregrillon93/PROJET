@@ -1092,7 +1092,7 @@ function pickExercises(group, count, equipFilter, limitations, usedNames, level,
     return chosen.map((e) => withId({ ...e, category: group }));
 }
 const DURATION_CAPS = { court: 16, moyen: 16, long: 16 };
-const DURATION_TARGETS = { court: [30, 45], moyen: [45, 60], long: [60, 90] };
+const DURATION_TARGETS = { court: [30, 45], moyen: [45, 60], long: [80, 90] };
 const DURATION_PROFILES = {
     court: { minExercises: 5, maxExercises: 16, portionDepth: 1, minRest: 60 },
     moyen: { minExercises: 7, maxExercises: 16, portionDepth: 2, minRest: 90 },
@@ -1347,8 +1347,10 @@ function getDayVolumePlan(day, answers = {}, week = 1, adjustment) {
         }
     }
     const maxMinutes = (DURATION_TARGETS[answers.duration] || [30, 45])[1];
-    const estimate = () => estimateSessionMinutes({ ...day, exercises: withPlannedSets(exercises, sets, answers) }, answers,
-        getPlannedSupersets(day, exercises, answers));
+    const estimate = () => {
+        const planned = withPlannedSets(exercises, sets, answers);
+        return estimateSessionMinutes({ ...day, exercises: planned }, answers, getPlannedSupersets(day, exercises, answers, planned));
+    };
     let guard = 0;
     while (estimate() > maxMinutes && guard++ < 100) {
         if (cutSet()) continue;
@@ -1366,7 +1368,7 @@ function getDayVolumePlan(day, answers = {}, week = 1, adjustment) {
             }
         }
     }
-    return { exercises, sets, supersets: getPlannedSupersets(day, exercises, answers),
+    return { exercises, sets, supersets: getPlannedSupersets(day, exercises, answers, withPlannedSets(exercises, sets, answers)),
         exerciseIndices: exercises.map(exercise => all.indexOf(exercise)), adjustment: appliedAdjustment };
 }
 function getDayPlanForWeek(program, dayIndex, answers, week, adjustment) {
@@ -1385,9 +1387,11 @@ function getWeeklyDayPlans(program, answers, week, adjustment) {
     const budgets = Object.fromEntries(Object.entries(targets).map(([group, sets]) => [group, Math.round(sets * multiplier)]));
     const [minMinutes, maxMinutes] = DURATION_TARGETS[answers.duration] || DURATION_TARGETS.court;
     plans.forEach((plan, dayIndex) => {
-        const estimate = () => estimateSessionMinutes({
-            ...program[dayIndex], exercises: withPlannedSets(plan.exercises, plan.sets, answers),
-        }, answers, plan.supersets);
+        const day = program[dayIndex];
+        const estimate = () => {
+            const planned = withPlannedSets(plan.exercises, plan.sets, answers);
+            return estimateSessionMinutes({ ...day, exercises: planned }, answers, getPlannedSupersets(day, plan.exercises, answers, planned));
+        };
         const candidates = plan.exercises.flatMap((ex, index) =>
             !ex.isRenforcement && Object.hasOwn(budgets, ex.category) &&
             !(adjustment?.delta < 0 && adjustment.category === ex.category) ? [{ ex, index }] : []);
@@ -1409,6 +1413,7 @@ function getWeeklyDayPlans(program, answers, week, adjustment) {
             const group = next.ex.category;
             plan.scheduledSetAdditions[group] = (plan.scheduledSetAdditions[group] || 0) + 1;
         }
+        plan.supersets = getPlannedSupersets(day, plan.exercises, answers, withPlannedSets(plan.exercises, plan.sets, answers));
     });
     return plans;
 }
@@ -1833,15 +1838,15 @@ function getAutomaticSupersetStyle(exercises, answers, arrange = false) {
     };
     const classic = estimateSessionMinutes({ exercises }, answers, []);
     const pairs = measure("biset");
-    const maxMinutes = (DURATION_TARGETS[answers?.duration] || DURATION_TARGETS.court)[1];
+    const [minMinutes, maxMinutes] = DURATION_TARGETS[answers?.duration] || DURATION_TARGETS.court;
     const canUseTriples = ["intermediaire", "confirme"].includes(answers?.level) &&
         answers?.goal !== "force" && answers?.recovery !== "faible" && pairs > maxMinutes;
     if (canUseTriples && measure("superset") < pairs) return "superset";
-    return pairs < classic ? "biset" : "classique";
+    return pairs < classic && (classic > maxMinutes || pairs >= minMinutes) ? "biset" : "classique";
 }
-function getPlannedSupersets(day, exercises, answers) {
+function getPlannedSupersets(day, exercises, answers, planned = exercises) {
     if (!hasManualSupersets(day, answers?.training_style)) {
-        return buildSupersetGroups(exercises, getAutomaticSupersetStyle(exercises, answers));
+        return buildSupersetGroups(planned, getAutomaticSupersetStyle(planned, answers));
     }
     return (day.supersets || []).map(group => group.map(index => exercises.indexOf(day.exercises[index]))
         .filter(index => index >= 0))
@@ -2895,7 +2900,7 @@ function analyzeProgram(program, answers) {
         return estimateSessionMinutes({ ...day, exercises: withPlannedSets(plan.exercises, plan.sets, answers) }, answers, plan.supersets);
     });
     const avgMinutes = sessionMinutes.length ? Math.round(sessionMinutes.reduce((a,b)=>a+b,0) / sessionMinutes.length) : 0;
-    const durationTarget = answers?.duration === 'court' ? [30,45] : answers?.duration === 'moyen' ? [45,60] : [60,90];
+    const durationTarget = DURATION_TARGETS[answers?.duration] || DURATION_TARGETS.court;
     if (avgMinutes < durationTarget[0] - 5) issues.unshift(`Durée estimée courte (${avgMinutes} min)`);
     if (avgMinutes > durationTarget[1] + 5) issues.unshift(`Durée estimée longue (${avgMinutes} min)`);
     const shortSessionCount = sessionMinutes.filter(minutes => minutes < durationTarget[0] - 5).length;
@@ -3007,7 +3012,7 @@ const STEPS = [
         options: [
             { value: "court", label: "30-45 min" },
             { value: "moyen", label: "45-60 min" },
-            { value: "long", label: "60-90 min" },
+            { value: "long", label: "1 h 30 · cible de 80 à 90 min" },
         ],
     },
     {
@@ -3354,7 +3359,9 @@ function ProgramBuilder() {
     const activeDay = currentDay;
     const displayedProgram = program?.map((day, dayIndex) => {
         const plan = currentVolumePlan.days[dayIndex];
-        return { ...day, exercises: withPlannedSets(plan.exercises, plan.sets, answers), supersets: plan.supersets, exerciseIndices: plan.exerciseIndices };
+        const exercises = withPlannedSets(plan.exercises, plan.sets, answers);
+        const minutes = estimateSessionMinutes({ ...day, exercises }, answers, plan.supersets);
+        return { ...day, exercises, minutes, supersets: plan.supersets, exerciseIndices: plan.exerciseIndices };
     });
     const activePlan = currentVolumePlan.days[selectedDayIndex];
     const sessionExercises = activePlan ? [...activePlan.exercises, ...((dayData?.current?.sessionExercises || []).filter(extra => !activeDay.exercises.some(ex => ex.id === extra.id)))] : [];
@@ -6572,14 +6579,19 @@ function ProgramBuilder() {
                 const coverage = currentWeek === 1 ? quality.weeklyCoverage : getWeeklyPortionCoverage(program, answers, currentWeek, currentVolumePlan.adjustment);
                 const missing = coverage.rows.filter(row => row.available && row.sets === 0);
                 const averageMinutes = Math.round(displayedProgram.reduce((total, day) =>
-                    total + estimateSessionMinutes(day, answers, day.supersets), 0) / Math.max(1, displayedProgram.length));
+                    total + day.minutes, 0) / Math.max(1, displayedProgram.length));
+                const [minimum, maximum] = DURATION_TARGETS[answers.duration] || DURATION_TARGETS.court;
+                const shortDays = currentWeek === CYCLE_WEEKS ? 0 : displayedProgram.filter(day => day.minutes < minimum).length;
                 return React.createElement("div", { className: "mc-program-check" },
                     React.createElement("div", { className: "item" }, React.createElement("span", { className: "label" }, "Séances"), React.createElement("span", { className: "value" }, `${program.length} / semaine`)),
                     React.createElement("div", { className: "item" }, React.createElement("span", { className: "label" }, "Durée moyenne"), React.createElement("span", { className: "value" }, `${averageMinutes} min`)),
+                    React.createElement("div", { className: "item" }, React.createElement("span", { className: "label" }, "Durée cible"), React.createElement("span", { className: "value" }, `${minimum}–${maximum} min`)),
                     React.createElement("div", { className: "item" }, React.createElement("span", { className: "label" }, "Cohérence"), React.createElement("span", { className: "value", style: { color: quality.score >= 80 ? colors.good : "#F2C94C" } }, `${quality.score}/100`)),
                     React.createElement("div", { className: "item", style: { alignItems: "flex-start", gap: 8 } },
                         React.createElement("span", { className: "label" }, `Portions couvertes · semaine ${currentWeek}`),
                         React.createElement("span", { className: "value" }, `${coverage.coveredCount}/${coverage.availableCount}`)),
+                    shortDays > 0 && React.createElement("div", { className: "mc-v12-muted" },
+                        `${shortDays}/${displayedProgram.length} séances sous la durée cible avec les séries et exercices retenus pour ton profil.`),
                     missing.length > 0 && React.createElement("details", { className: "item" },
                         React.createElement("summary", { className: "label" }, "Portions à couvrir"),
                         React.createElement("div", { className: "mc-v12-muted" }, missing.map(row => row.portion).join(" · "))));
@@ -6631,7 +6643,7 @@ function ProgramBuilder() {
             displayedProgram.map((day, di) => (React.createElement("div", { key: di, style: { background: colors.surface, border: `1px solid ${colors.border}` }, className: "rounded-lg p-3" },
                 React.createElement("div", { style: { fontFamily: displayFont, fontWeight: 700, fontSize: 17 }, className: "mb-2" }, day.title),
                 React.createElement("div", { className: "mc-v12-muted mb-2" },
-                    `Environ ${estimateSessionMinutes(day, answers, day.supersets)} min`,
+                    `Environ ${day.minutes} min`,
                     day.supersets.length > 0 ? ` · ${day.supersets.length} enchaînement${day.supersets.length > 1 ? "s" : ""}` : ""),
                 React.createElement("div", { className: "flex flex-col gap-2" }, day.exercises.map((ex, position) => {
                     const ei = day.exerciseIndices[position];
