@@ -1220,21 +1220,28 @@ function distributeWeeklySlots(template) {
 // number of working sets is periodized. Week 8 is a deload. Values are
 // multipliers of the exercise's generated base set count.
 const VOLUME_PROGRESSION = {
-    force: [0.85, 1, 1, 1, 1, 1, 0.90, 0.65],
-    hypertrophie: [0.90, 1, 1, 1, 1, 1, 1, 0.70],
-    perte_gras: [0.85, 0.95, 0.95, 0.95, 0.95, 0.95, 0.90, 0.70],
-    recomposition: [0.85, 0.95, 1, 1, 1, 1, 0.95, 0.70],
+    force: [0.85, 0.95, 1, 1.02, 1.04, 1.06, 0.90, 0.65],
+    hypertrophie: [0.90, 0.95, 1, 1.04, 1.08, 1.10, 1, 0.70],
+    perte_gras: [0.85, 0.90, 0.93, 0.95, 0.97, 1, 0.90, 0.70],
+    recomposition: [0.85, 0.95, 1, 1.03, 1.05, 1.07, 0.95, 0.70],
 };
 const VOLUME_WEEK_DETAILS = [
     { label: "Mise en route", focus: "Technique + marge", note: "Installe tes repères de charge et de répétitions." },
     { label: "Base", focus: "Stabiliser", note: "Confirme tes repères sur les mêmes exercices." },
-    ...Array.from({ length: 4 }, () => ({ label: "Progression", focus: "Répétitions et charge", note: "Le coach garde le volume stable quand tu progresses et ajuste une série si l’historique le justifie." })),
-    { label: "Consolidation", focus: "Assimiler", note: "Consolide les progrès et prépare la récupération." },
+    { label: "Progression", focus: "Répétitions", note: "Essaie d’améliorer les séries qui restent sous le haut de ta fourchette." },
+    { label: "Montée progressive", focus: "Répétitions et séries", note: "Le coach monte légèrement le volume si la durée, ton niveau et ta récupération le permettent." },
+    { label: "Accumulation", focus: "Séries utiles", note: "Garde une technique comparable pour mesurer tes progrès quand le volume monte." },
+    { label: "Semaine haute", focus: "Confirmer les progrès", note: "Confirme tes meilleures séries. Le coach respecte les plafonds de ton programme." },
+    { label: "Consolidation", focus: "Stabiliser", note: "Stabilise tes charges et tes répétitions avant la semaine allégée." },
     { label: "Semaine allégée", focus: "Récupérer", note: "Moins de séries, charges maîtrisées et aucun record à chercher." },
 ];
 function getVolumeMultiplier(goal, week) {
     const progression = VOLUME_PROGRESSION[goal] || VOLUME_PROGRESSION.recomposition;
     return progression[Math.min(CYCLE_WEEKS, Math.max(1, week)) - 1] || 1;
+}
+function getPlannedVolumeMultiplier(answers, week) {
+    const multiplier = getVolumeMultiplier(answers.goal, week);
+    return answers.recovery === "faible" ? Math.min(1, multiplier) : multiplier;
 }
 function getExerciseSetFloor(ex, index, week) {
     return index === 0 || isStableAnchorExercise(ex) || (!ex.isCoverageAccessory && week !== CYCLE_WEEKS) ? 2 : 1;
@@ -1242,7 +1249,7 @@ function getExerciseSetFloor(ex, index, week) {
 function getWeekSetPlan(exercises, goal, week, answers = {}) {
     const list = exercises || [];
     if (!list.length) return [];
-    const multiplier = getVolumeMultiplier(goal, week);
+    const multiplier = getPlannedVolumeMultiplier({ ...answers, goal }, week);
     const raw = list.map(ex => Math.max(1, parseSetCount(ex.target)));
     const caps = list.map(ex => maxSetsPerExercise(ex, answers));
     const floors = list.map((ex, i) => getExerciseSetFloor(ex, i, week));
@@ -1378,7 +1385,7 @@ function getWeeklyDayPlans(program, answers, week, adjustment) {
     const plans = (program || []).map((_, index) => getDayPlanForWeek(program, index, answers, week, adjustment));
     if (week === CYCLE_WEEKS || answers.recovery === "faible") return plans;
     const targets = getWeeklyVolumeTargets(answers);
-    const multiplier = getVolumeMultiplier(answers.goal, week);
+    const multiplier = getPlannedVolumeMultiplier(answers, week);
     const counts = Object.fromEntries(Object.keys(targets).map(group => [group, 0]));
     const priorities = new Set(answers.priority || []);
     plans.forEach(plan => plan.exercises.forEach((ex, index) => {
@@ -5725,7 +5732,7 @@ function ProgramBuilder() {
                 React.createElement("div", { className: "flex items-center justify-between mb-3" },
                     React.createElement("div", { className: "mc-section-title" }, "Ton cycle de 8 semaines"),
                     React.createElement("span", { className: "mc-chip" }, coachStatus.deload ? "DELOAD" : "ACTIF")),
-                React.createElement("div", { className: "grid grid-cols-8 gap-1.5" }, Array.from({ length: CYCLE_WEEKS }, (_, i) => i + 1).map(w => (React.createElement("div", { key: w, style: { textAlign: "center" } },
+                React.createElement("div", { className: "grid grid-cols-8 gap-1.5" }, Array.from({ length: CYCLE_WEEKS }, (_, i) => i + 1).map(w => (React.createElement("div", { key: w, title: getVolumeWeekLabel(w), style: { textAlign: "center" } },
                     React.createElement("div", { style: { height: 42, borderRadius: 8, background: w === coachStatus.week ? "linear-gradient(180deg,#087CFF,#12B8FF)" : w === 8 ? "rgba(39,216,155,.14)" : "#0D2233", border: `1px solid ${w === coachStatus.week ? "#12B8FF" : "#1D405B"}`, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: dataFont, fontSize: 10, color: w === coachStatus.week ? "#fff" : "#7792A5", boxShadow: w === coachStatus.week ? "0 0 14px rgba(18,184,255,.3)" : "none" } },
                         cyclePlan[w - 1].total),
                     React.createElement("div", { style: { fontSize: 8, color: "#66839A", marginTop: 3 } },
@@ -6598,15 +6605,15 @@ function ProgramBuilder() {
             })(),
             React.createElement("div", { className: "rounded-lg p-3", style: { background: colors.surface, border: `1px solid ${colors.border}` } },
                 React.createElement("div", { style: { fontFamily: displayFont, fontWeight: 700, fontSize: 13 }, className: "mb-2 flex items-center gap-1" }, React.createElement(Calendar, { size: 14 }), "Volume programm\u00E9 \u00B7 8 semaines"),
-                React.createElement("div", { className: "grid grid-cols-8 gap-1" }, cyclePlan.map(({ total }, i) => (React.createElement("div", { key: i, className: "rounded p-1.5 text-center", style: { background: i + 1 === coachStatus.week ? colors.accentDim : colors.surfaceAlt, border: `1px solid ${i + 1 === coachStatus.week ? colors.accent : colors.border}` } },
+                React.createElement("div", { className: "grid grid-cols-8 gap-1" }, cyclePlan.map(({ total }, i) => (React.createElement("div", { key: i, title: getVolumeWeekLabel(i + 1), className: "rounded p-1.5 text-center", style: { background: i + 1 === coachStatus.week ? colors.accentDim : colors.surfaceAlt, border: `1px solid ${i + 1 === coachStatus.week ? colors.accent : colors.border}` } },
                     React.createElement("div", { style: { fontFamily: dataFont, fontSize: 9, color: colors.faint } },
                         "S",
                         i + 1),
                     React.createElement("div", { style: { fontFamily: dataFont, fontSize: 10, fontWeight: 700, color: i + 1 === coachStatus.week ? colors.accent : colors.text } },
                         total))))),
                 React.createElement("div", { style: { color: colors.faint, fontSize: 10, marginTop: 8 } },
-                    "Séries prévues après ajustement à la durée. Les semaines à venir sont estimées."),
-                React.createElement("div", { className: "mc-v12-muted mt-1" }, coachStatus.note),
+                    "Séries prévues après ajustement à la durée. Si le volume reste stable, la progression se fait en répétitions ou en charge."),
+                React.createElement("div", { className: "mc-v12-muted mt-1" }, `S${coachStatus.week} · ${coachStatus.label}. ${coachStatus.note}`),
                 currentVolumePlan.adjustment && React.createElement("div", { className: "mc-v12-muted mt-1" },
                     `${currentVolumePlan.adjustment.name} · ${currentVolumePlan.adjustment.delta > 0 ? "+1 série après trois performances stables" : "−1 série après deux séances à l’échec"}`)),
             (() => {
