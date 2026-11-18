@@ -1431,7 +1431,12 @@ function getWeeklyDayPlans(program, answers, week, adjustment) {
     const multiplier = getPlannedVolumeMultiplier(answers, week);
     const volume = summarizePlannedVolume(plans).byGroup;
     const priorities = new Set(answers.priority || []);
-    const budgets = Object.fromEntries(Object.entries(targets).map(([group, sets]) => [group, Math.round(sets * multiplier)]));
+    const canAddVolume = answers.duration === "long" && ["hypertrophie", "recomposition"].includes(answers.goal);
+    const budgets = Object.fromEntries(Object.entries(targets).map(([group, sets]) => {
+        const base = Math.round(sets * multiplier);
+        const reserve = canAddVolume && MAJOR_TRAINING_GROUPS.includes(group) && base < 10 ? 1 : 0;
+        return [group, base + reserve];
+    }));
     const [minMinutes, maxMinutes] = DURATION_TARGETS[answers.duration] || DURATION_TARGETS.court;
     const desiredMinutes = answers.duration === "long" ? Math.round((minMinutes + maxMinutes) / 2) : minMinutes;
     const equivalent = group => (volume[group]?.direct || 0) + 0.5 * (volume[group]?.indirect || 0);
@@ -2139,7 +2144,7 @@ function generateProgram(answers) {
     // récupèrent leur part de séries sans augmenter artificiellement le volume
     // total d'un muscle.
     const withTrapezius = ensureTrapeziusExercises(repaired, answers);
-    const fitted = fitProgramToDuration(withTrapezius, answers);
+    const fitted = addMissingPortionExercises(withTrapezius, answers);
     const rebalanced = rebalanceWeeklyVolume(balanceSimilarTrainingDays(fitted, answers, cap), answers);
     const uniqueProgram = repairDuplicateExercises(repairPortionCoverage(rebalanced, answers), answers);
     const scheduled = ensureMajorMuscleFrequency(applyProgramPrescription(uniqueProgram, answers), answers);
@@ -2275,12 +2280,10 @@ function repairDuplicateExercises(program, answers = {}) {
 function isStableAnchorExercise(ex) {
     return /développé|developpe|squat|soulevé de terre|souleve de terre|fente|hip thrust|dips|pompe|rowing barre|tirage horizontal|tirage vertical|presse à cuisses/i.test(String(ex?.name || ""));
 }
-function fitProgramToDuration(program, answers = {}) {
-    const target = DURATION_TARGETS[answers.duration] || [30, 45];
-    const profile = getDurationProfile(answers.duration, answers.level);
-    const minExercises = profile.minExercises;
-    const maxExercises = profile.maxExercises;
-    const durationLevel = answers.duration === 'long' ? 3 : answers.duration === 'moyen' ? 2 : 1;
+function addMissingPortionExercises(program, answers = {}) {
+    const [, maxMinutes] = DURATION_TARGETS[answers.duration] || DURATION_TARGETS.court;
+    const { maxExercises } = getDurationProfile(answers.duration, answers.level);
+    const weeklyTargets = getWeeklyVolumeTargets(answers);
     const weeklyExerciseCounts = {};
     const weeklyPortions = {};
     const limitations = (answers.limitations || []).filter(value => value !== 'aucune');
@@ -2313,7 +2316,7 @@ function fitProgramToDuration(program, answers = {}) {
     };
     const groupOrder = ['Pectoraux','Dos','Épaules','Jambes','Ischios/Fessiers','Biceps','Triceps','Mollets','Core','Trapèzes','Avant-bras','Adducteurs/Abducteurs'];
     return (program || []).map((day) => {
-        let exercises = (day.exercises || []).map((ex) => ({ ...ex }));
+        const exercises = (day.exercises || []).slice();
         const estimate = (candidate) => {
             const plan = getDayVolumePlan({ ...day, exercises }, answers, 2);
             if (candidate && !plan.exercises.includes(candidate)) return Infinity;
@@ -2329,24 +2332,16 @@ function fitProgramToDuration(program, answers = {}) {
                 picked.forEach(ex => exercises.push({ ...ex, target: `2x${ex.isTime ? '30' : '12-15'}`, rest: 45, isRenforcement: true }));
             }
         }
-        const belowDurationTarget = () => estimate() < target[0] || exercises.length < minExercises;
-        const hasCoverageNeed = () => groupOrder.some(group => isGroupAllowedOnDay(group, day.title) && getPortionNeed(group));
-        let guard = 0;
-        while ((belowDurationTarget() || hasCoverageNeed()) && exercises.length < maxExercises && guard < 40) {
-            guard++;
+        while (exercises.length < maxExercises) {
             const existingNames = new Set(exercises.map(e => e.name));
             let added = false;
             for (const group of groupOrder) {
                 if (!isGroupAllowedOnDay(group, day.title)) continue;
                 const preferredPortion = getPortionNeed(group);
-                const needsCoverage = !!preferredPortion;
-                if (!belowDurationTarget() && !needsCoverage) continue;
-                const groupCount = exercises.filter(e => e.category === group && !e.isRenforcement).length;
-                if (!needsCoverage && groupCount >= 2 && durationLevel < 3) continue;
-                const weeklyTarget = getWeeklyVolumeTargets(answers)[group] || 99;
+                if (!preferredPortion) continue;
+                const weeklyTarget = weeklyTargets[group];
                 const nextWeeklyCount = (weeklyExerciseCounts[group] || 0) + 1;
-                const hasTwoSetBudget = weeklyTarget >= 2 * nextWeeklyCount;
-                if (needsCoverage ? weeklyTarget < nextWeeklyCount : !hasTwoSetBudget) continue;
+                if (weeklyTarget < 2 * nextWeeklyCount) continue;
                 const rejectedNames = new Set(existingNames);
                 for (let attempt = 0; attempt < (POOL[group] || []).length; attempt++) {
                     const allowAdvanced = !exercises.some(isAdvancedMovement);
@@ -2355,16 +2350,14 @@ function fitProgramToDuration(program, answers = {}) {
                     const ex = picked[0];
                     rejectedNames.add(ex.name);
                     const targets = getStatMuscleTargets(ex);
-                    if (preferredPortion && !targets.some(target => target.category === group && target.portion === preferredPortion)) continue;
-                    const coverageAccessory = needsCoverage && !isStableAnchorExercise(ex);
+                    if (!targets.some(target => target.category === group && target.portion === preferredPortion)) continue;
                     const plannedExercise = {
                         ...ex,
-                        target: `1x${getExerciseRepRange(ex, answers.goal, answers.level)}`,
+                        target: `2x${getExerciseRepRange(ex, answers.goal, answers.level)}`,
                         rest: getExerciseRest(ex, answers),
-                        ...(coverageAccessory ? { isCoverageAccessory: true } : {}),
                     };
                     exercises.push(plannedExercise);
-                    if (estimate(plannedExercise) > target[1]) {
+                    if (estimate(plannedExercise) > maxMinutes) {
                         exercises.pop();
                         continue;
                     }
