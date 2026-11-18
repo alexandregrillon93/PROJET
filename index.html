@@ -1372,6 +1372,43 @@ function getDayVolumePlan(day, answers = {}, week = 1, adjustment) {
 function getDayPlanForWeek(program, dayIndex, answers, week, adjustment) {
     return getDayVolumePlan(program[dayIndex], answers, week, adjustment?.dayIndex === dayIndex ? adjustment : null);
 }
+function getWeeklyDayPlans(program, answers, week, adjustment) {
+    const plans = (program || []).map((_, index) => getDayPlanForWeek(program, index, answers, week, adjustment));
+    if (week === CYCLE_WEEKS || answers.recovery === "faible") return plans;
+    const lowerGroups = ["Jambes", "Ischios/Fessiers", "Mollets"];
+    const targets = getWeeklyVolumeTargets(answers);
+    const multiplier = getVolumeMultiplier(answers.goal, week);
+    const counts = Object.fromEntries(lowerGroups.map(group => [group, 0]));
+    plans.forEach(plan => plan.exercises.forEach((ex, index) => {
+        if (!ex.isRenforcement && lowerGroups.includes(ex.category)) counts[ex.category] += plan.sets[index];
+    }));
+    const budgets = Object.fromEntries(lowerGroups.map(group => [group, Math.round(targets[group] * multiplier)]));
+    const [minMinutes, maxMinutes] = DURATION_TARGETS[answers.duration] || DURATION_TARGETS.court;
+    plans.forEach((plan, dayIndex) => {
+        const estimate = () => estimateSessionMinutes({
+            ...program[dayIndex], exercises: withPlannedSets(plan.exercises, plan.sets, answers),
+        }, answers, plan.supersets);
+        const candidates = plan.exercises.flatMap((ex, index) =>
+            !ex.isRenforcement && lowerGroups.includes(ex.category) &&
+            !(adjustment?.delta < 0 && adjustment.category === ex.category) ? [{ ex, index }] : []);
+        while (estimate() < minMinutes) {
+            const next = candidates.filter(({ ex, index }) =>
+                counts[ex.category] < budgets[ex.category] && plan.sets[index] < maxSetsPerExercise(ex, answers))
+                .sort((a, b) => counts[a.ex.category] / budgets[a.ex.category] - counts[b.ex.category] / budgets[b.ex.category] ||
+                    plan.sets[a.index] - plan.sets[b.index])[0];
+            if (!next) break;
+            plan.sets[next.index]++;
+            if (estimate() > maxMinutes) {
+                plan.sets[next.index]--;
+                candidates.splice(candidates.indexOf(next), 1);
+                continue;
+            }
+            counts[next.ex.category]++;
+            plan.lowerBodySetsAdded = (plan.lowerBodySetsAdded || 0) + 1;
+        }
+    });
+    return plans;
+}
 function getCycleVolumeAdjustment(program, answers, week, start, entries) {
     if (!program?.length || !start || week < 3 || week >= CYCLE_WEEKS) return null;
     const cutoff = cycleWeekRange(start, week).monday;
@@ -1474,7 +1511,7 @@ function getWeeklyVolumeTargets(answers) {
     // La durée sert surtout à ajouter de la variété et de la couverture anatomique.
     // Elle ne doit jamais transformer un groupe en 13+ séries/semaine juste pour
     // remplir l'horloge. Les plafonds ci-dessous empêchent ce comportement.
-    const lowerFactor = goal === 'recomposition' ? (days >= 4 ? 0.72 : 0.78) : goal === 'perte_gras' ? 0.80 : 0.92;
+    const lowerFactor = goal === 'perte_gras' ? 0.80 : 0.92;
     const upperMajor = ['Pectoraux', 'Dos'];
     const majorMax = level === 'confirme' ? 12 : level === 'intermediaire' ? 10 : 8;
     const lowerMax = level === 'confirme' ? 10 : level === 'intermediaire' ? 9 : 7;
@@ -1636,8 +1673,7 @@ function getAvailablePortionTargets(answers = {}) {
 function getWeeklyPortionCoverage(program, answers, week = 1, adjustment) {
     const availablePortions = getAvailablePortionTargets(answers);
     const stats = {};
-    (program || []).forEach((_day, dayIndex) => {
-        const plan = getDayPlanForWeek(program, dayIndex, answers, week, adjustment);
+    getWeeklyDayPlans(program, answers, week, adjustment).forEach(plan => {
         plan.exercises.forEach((ex, exerciseIndex) => {
             if (ex.isRenforcement || !plan.sets[exerciseIndex]) return;
             getStatMuscleTargets(ex).forEach(({ category, portion }) => {
@@ -2916,8 +2952,8 @@ function analyzeProgram(program, answers) {
     if (answers?.recovery === 'faible')
         score -= 2;
     score = Math.max(0, Math.min(100, Math.round(score)));
-    const sessionMinutes = program.map((day, index) => {
-        const plan = getDayPlanForWeek(program, index, answers, 1);
+    const sessionMinutes = getWeeklyDayPlans(program, answers, 1).map((plan, index) => {
+        const day = program[index];
         return estimateSessionMinutes({ ...day, exercises: withPlannedSets(plan.exercises, plan.sets, answers) }, answers, plan.supersets);
     });
     const avgMinutes = sessionMinutes.length ? Math.round(sessionMinutes.reduce((a,b)=>a+b,0) / sessionMinutes.length) : 0;
@@ -3422,7 +3458,7 @@ function ProgramBuilder() {
     const cyclePlan = useMemo(() => Array.from({ length: CYCLE_WEEKS }, (_, index) => {
         const week = index + 1;
         const adjustment = week <= currentWeek ? getCycleVolumeAdjustment(program, answers, week, programStartDate, trainingLog) : null;
-        const days = (program || []).map((_, dayIndex) => getDayPlanForWeek(program, dayIndex, answers, week, adjustment));
+        const days = getWeeklyDayPlans(program, answers, week, adjustment);
         return { days, adjustment, ...summarizePlannedVolume(days) };
     }), [program, answers, currentWeek, programStartDate, trainingLog]);
     const currentVolumePlan = cyclePlan[currentWeek - 1];
@@ -4004,7 +4040,7 @@ function ProgramBuilder() {
             const volumeByCategory = Object.entries(setsByCategory).map(([category, sets]) => ({ category, sets, volume: Math.round(volByCategory[category] || 0) })).sort((a,b) => b.volume - a.volume || b.sets - a.sets);
             const volumeByPortion = Object.entries(setsByPortion).flatMap(([category, portions]) => Object.entries(portions).map(([portion, sets]) => ({ category, portion, sets }))).sort((a,b) => b.sets - a.sets);
             const volumeAdjustment = getCycleVolumeAdjustment(program, answers, rotationWeek, programStartDate, mergedLog);
-            const volumePlans = (program || []).map((_, index) => getDayPlanForWeek(program, index, answers, rotationWeek, volumeAdjustment));
+            const volumePlans = getWeeklyDayPlans(program, answers, rotationWeek, volumeAdjustment);
             const cycleVolume = summarizePlannedVolume(volumePlans);
             const nextSetCounts = new Map();
             volumePlans.forEach(plan => plan.exercises.forEach((ex, index) =>
@@ -6834,7 +6870,9 @@ function ProgramBuilder() {
                             getCurrentDaySetPlan().reduce((sum, sets) => sum + sets, 0),
                             " séries prévues aujourd’hui")),
                     activePlan?.adjustment && React.createElement("div", { className: "mc-v12-muted mt-1" },
-                        `${activePlan.adjustment.name} · ${activePlan.adjustment.delta > 0 ? "+1 série après trois performances stables" : "−1 série après deux séances à l’échec"}`)),
+                        `${activePlan.adjustment.name} · ${activePlan.adjustment.delta > 0 ? "+1 série après trois performances stables" : "−1 série après deux séances à l’échec"}`),
+                    activePlan?.lowerBodySetsAdded > 0 && React.createElement("div", { className: "mc-v12-muted mt-1" },
+                        `Bas du corps · +${activePlan.lowerBodySetsAdded} série${activePlan.lowerBodySetsAdded > 1 ? "s" : ""} grâce au temps disponible`)),
                 React.createElement("div", { className: "rounded p-2 mt-1", style: { background: recoveryModifier(todayRecovery).tone === 'warn' ? '#FFB06E12' : '#12B8FF12', border: `1px solid ${recoveryModifier(todayRecovery).tone === 'warn' ? '#FFB06E55' : '#12B8FF55'}` } },
                     React.createElement("div", { className: "flex items-center justify-between" },
                         React.createElement("span", { style: { fontFamily: displayFont, fontSize: 10, color: colors.muted } }, "ADAPTATION DU JOUR"),
