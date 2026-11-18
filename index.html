@@ -728,13 +728,15 @@ const EQUIP_LABELS = {
     bodyweight: "Poids du corps uniquement",
 };
 const GOAL_SCHEMES = {
-    force: { label: "Force", sets: 5, reps: "4-6", rest: 180 },
-    hypertrophie: { label: "Prise de muscle", sets: 4, reps: "8-12", rest: 90 },
-    perte_gras: { label: "Perte de gras", sets: 3, reps: "12-15", rest: 45 },
-    recomposition: { label: "Recomposition", sets: 4, reps: "8-12", rest: 75 },
+    force: { label: "Force", reps: "4-6", rest: 180 },
+    hypertrophie: { label: "Prise de muscle", reps: "8-12", rest: 90 },
+    perte_gras: { label: "Perte de gras", reps: "8-12", rest: 75 },
+    recomposition: { label: "Recomposition", reps: "8-12", rest: 90 },
 };
-function getExerciseRepRange(exercise, goal) {
+const MAJOR_TRAINING_GROUPS = ["Jambes", "Ischios/Fessiers", "Pectoraux", "Dos", "Épaules"];
+function getExerciseRepRange(exercise, goal, level) {
     if (exercise?.isTime) return "30-45";
+    if (goal === "force" && isStableAnchorExercise(exercise) && level === "debutant") return "6-10";
     if (goal === "force" && !isStableAnchorExercise(exercise)) return "8-12";
     return (GOAL_SCHEMES[goal] || GOAL_SCHEMES.recomposition).reps;
 }
@@ -821,6 +823,12 @@ const ADAPTIVE_SPLITS = {
 
 function getSplitForLevel(days, level) {
     const safeLevel = ADAPTIVE_SPLITS[level] ? level : "intermediaire";
+    if (Number(days) === 2) {
+        return ["A", "B"].map((letter, index) => ({
+            title: `Full Body ${letter} · ${safeLevel === "debutant" ? "Débutant" : safeLevel === "intermediaire" ? "Intermédiaire" : "Confirmé"}`,
+            slots: [...MAJOR_TRAINING_GROUPS.map(group => [group, 1]), [index === 0 ? "Core" : "Mollets", 1]],
+        }));
+    }
     return ADAPTIVE_SPLITS[safeLevel]?.[days] || ADAPTIVE_SPLITS[safeLevel]?.[3] || [];
 }
 // Exercices stables et faciles à apprendre pour le profil débutant.
@@ -1111,15 +1119,16 @@ function getDurationProfile(duration, level) {
 function getPreferredExerciseRest(answers = {}) {
     const scheme = GOAL_SCHEMES[answers.goal] || GOAL_SCHEMES.recomposition;
     const minimum = getDurationProfile(answers.duration).minRest;
-    const base = answers.recovery === "faible" ? Math.max(60, Math.round(scheme.rest * 0.9)) : scheme.rest;
-    return Math.max(minimum, Math.round(base / 15) * 15);
+    return Math.max(minimum, scheme.rest);
 }
 function getExerciseRest(exercise, answers = {}, isPrimary = false) {
     const preferred = getPreferredExerciseRest(answers);
-    if (answers.goal !== "force" || isPrimary) return preferred;
     const minimum = getDurationProfile(answers.duration).minRest;
-    const accessoryRest = isStableAnchorExercise(exercise) ? Math.max(90, minimum) : Math.max(60, minimum);
-    return Math.min(preferred, accessoryRest);
+    if (answers.goal === "force") {
+        if (isPrimary || isStableAnchorExercise(exercise)) return preferred;
+        return Math.max(90, minimum);
+    }
+    return isPrimary || isStableAnchorExercise(exercise) ? Math.max(120, preferred) : preferred;
 }
 const CYCLE_WEEKS = 8;
 const CYCLE_EXERCISE_POLICY = {
@@ -1251,7 +1260,7 @@ function getPlannedVolumeMultiplier(answers, week) {
     return answers.recovery === "faible" ? Math.min(1, multiplier) : multiplier;
 }
 function getExerciseSetFloor(ex, index, week) {
-    return index === 0 || isStableAnchorExercise(ex) || (!ex.isCoverageAccessory && week !== CYCLE_WEEKS) ? 2 : 1;
+    return week !== CYCLE_WEEKS || index === 0 || isStableAnchorExercise(ex) ? 2 : 1;
 }
 function getWeekSetPlan(exercises, goal, week, answers = {}) {
     const list = exercises || [];
@@ -1291,7 +1300,7 @@ const DELOAD_MIN_EXERCISES = { court: 3, moyen: 5, long: 7 };
 function withPlannedSets(exercises, sets, answers = {}) {
     return exercises.map((ex, index) => ({
         ...ex,
-        target: `${sets[index]}x${((ex.target || '').split('x').slice(1).join('x') || getExerciseRepRange(ex, answers.goal)).trim()}`,
+        target: `${sets[index]}x${((ex.target || '').split('x').slice(1).join('x') || getExerciseRepRange(ex, answers.goal, answers.level)).trim()}`,
     }));
 }
 // Le premier exercice (mouvement principal) n'est jamais retiré.
@@ -1574,8 +1583,8 @@ function getWeeklyVolumeTargets(answers) {
     const upperMajor = ['Pectoraux', 'Dos'];
     const majorMax = level === 'confirme' ? 12 : level === 'intermediaire' ? 10 : 8;
     const longerHypertrophy = goal === 'hypertrophie' && answers?.duration === 'long' && recovery !== 'faible';
-    const lowerMax = level === 'confirme' ? (longerHypertrophy ? 11 : 10) :
-        level === 'intermediaire' ? (longerHypertrophy ? 10 : 9) : 7;
+    const lowerMax = level === 'confirme' ? (longerHypertrophy ? 12 : 10) :
+        level === 'intermediaire' ? (goal === 'hypertrophie' ? 10 : 9) : 7;
     upperMajor.forEach(g => {
         const raw = Math.round(p.major * goalFactor * dayFactor * recoveryFactor * durationFactor + (priority.has(g) ? 2 : 0));
         target[g] = Math.min(majorMax, Math.max(4, raw));
@@ -1815,7 +1824,7 @@ function ensureTrapeziusExercises(program, answers = {}) {
             exercise = {
                 ...withId(candidate),
                 category: "Trapèzes",
-                target: `${getExerciseSetCount("Trapèzes", answers.level, answers.goal, trainingDays, answers.recovery)}x${getExerciseRepRange(candidate, answers.goal)}`,
+                target: `${getExerciseSetCount("Trapèzes", answers.level, answers.goal, trainingDays, answers.recovery)}x${getExerciseRepRange(candidate, answers.goal, answers.level)}`,
                 rest: getExerciseRest(candidate, answers),
                 portion: candidate.portion || classifyPortion("Trapèzes", candidate.subgroup || "", candidate.name || ""),
             };
@@ -1958,7 +1967,7 @@ function repairPortionCoverage(program, answers) {
             const candidate = candidates.find(e => (e.portion || classifyPortion(category, e.subgroup || '', e.name || '')) === missingPortion);
             if (!candidate) continue;
             usedNames.delete(current.name);
-            const next = withId({ ...candidate, category, target: `${parseSetCount(current.target)}x${getExerciseRepRange(candidate, answers?.goal)}`, rest: current.rest, portion: candidate.portion || classifyPortion(category, candidate.subgroup || '', candidate.name || '') });
+            const next = withId({ ...candidate, category, target: `${parseSetCount(current.target)}x${getExerciseRepRange(candidate, answers?.goal, answers?.level)}`, rest: current.rest, portion: candidate.portion || classifyPortion(category, candidate.subgroup || '', candidate.name || '') });
             next.isCoverageAccessory = current.isCoverageAccessory;
             day.exercises[replacementRef.ei] = next;
             usedNames.add(next.name);
@@ -2069,7 +2078,7 @@ function generateProgram(answers) {
                 dayNames.add(ex.name);
                 exercises.push({
                     ...ex,
-                    target: `${getExerciseSetCount(group, answers.level, answers.goal, answers.days, answers.recovery)}x${getExerciseRepRange(ex, answers.goal)}`,
+                    target: `${getExerciseSetCount(group, answers.level, answers.goal, answers.days, answers.recovery)}x${getExerciseRepRange(ex, answers.goal, answers.level)}`,
                     rest: getExerciseRest(ex, answers, exercises.length === 0),
                 });
                 usedForGroup++;
@@ -2133,10 +2142,68 @@ function generateProgram(answers) {
     const fitted = fitProgramToDuration(withTrapezius, answers);
     const rebalanced = rebalanceWeeklyVolume(balanceSimilarTrainingDays(fitted, answers, cap), answers);
     const uniqueProgram = repairDuplicateExercises(repairPortionCoverage(rebalanced, answers), answers);
-    return improveWeeklyCoverage(uniqueProgram, answers).map((day) => ({
+    const scheduled = ensureMajorMuscleFrequency(applyProgramPrescription(uniqueProgram, answers), answers);
+    return applyProgramPrescription(improveWeeklyCoverage(scheduled, answers), answers).map((day) => ({
         ...day,
         supersets: getPlannedSupersets(day, day.exercises, answers),
     }));
+}
+function applyProgramPrescription(program, answers) {
+    return rebalanceWeeklyVolume(program.map(day => ({
+        ...day,
+        exercises: day.exercises.map((ex, index) => ex.isRenforcement ? ex : {
+            ...ex,
+            target: `${parseSetCount(ex.target)}x${getExerciseRepRange(ex, answers.goal, answers.level)}`,
+            rest: getExerciseRest(ex, answers, index === 0),
+        }),
+    })), answers);
+}
+function getMajorMuscleFrequency(plans) {
+    return Object.fromEntries(MAJOR_TRAINING_GROUPS.map(group => [group,
+        plans.filter(plan => plan.exercises.some(ex => ex.category === group && !ex.isRenforcement)).length]));
+}
+function ensureMajorMuscleFrequency(program, answers) {
+    const days = program.slice();
+    const cap = getDurationProfile(answers.duration, answers.level).maxExercises;
+    const limitations = (answers.limitations || []).filter(value => value !== "aucune");
+    const planFor = day => getDayVolumePlan(day, answers, 2);
+    const plans = days.map(planFor);
+    const frequency = getMajorMuscleFrequency(plans);
+    for (const group of MAJOR_TRAINING_GROUPS) {
+        while (frequency[group] < 2) {
+            const suitableDays = days.map((day, index) => ({ day, index }))
+                .filter(({ day, index }) => isGroupAllowedOnDay(group, day.title) &&
+                    !plans[index].exercises.some(ex => ex.category === group))
+                .sort((a, b) => a.day.exercises.length - b.day.exercises.length);
+            let applied = false;
+            for (const { day, index } of suitableDays) {
+                const existing = new Set(day.exercises.map(ex => ex.name));
+                const pick = pickExercises(group, 1, answers.equip, limitations, existing,
+                    answers.level, answers.preference, null, !day.exercises.some(isAdvancedMovement), existing)[0];
+                if (!pick) continue;
+                const nextExercise = { ...pick, target: `2x${getExerciseRepRange(pick, answers.goal, answers.level)}`, rest: getExerciseRest(pick, answers) };
+                const slots = day.exercises.length < cap ? [day.exercises.length] : day.exercises.flatMap((ex, pos) =>
+                    pos > 0 && !ex.isRenforcement && !MAJOR_TRAINING_GROUPS.includes(ex.category) ? [pos] : []);
+                for (const slot of slots.reverse()) {
+                    const exercises = day.exercises.slice();
+                    exercises[slot] = nextExercise;
+                    const nextDay = { ...day, exercises };
+                    const nextPlan = planFor(nextDay);
+                    if (!nextPlan.exercises.includes(nextExercise)) continue;
+                    if (MAJOR_TRAINING_GROUPS.some(key => plans[index].exercises.some(ex => ex.category === key) &&
+                        !nextPlan.exercises.some(ex => ex.category === key))) continue;
+                    days[index] = nextDay;
+                    plans[index] = nextPlan;
+                    frequency[group]++;
+                    applied = true;
+                    break;
+                }
+                if (applied) break;
+            }
+            if (!applied) break;
+        }
+    }
+    return days;
 }
 function balanceSimilarTrainingDays(program, answers, capacity) {
     const days = program.map(day => ({ ...day, exercises: day.exercises.slice() }));
@@ -2192,7 +2259,7 @@ function repairDuplicateExercises(program, answers = {}) {
             const next = withId({ ...replacement, category: ex.category, isCoverageAccessory: ex.isCoverageAccessory });
             const repRange = ex.isRenforcement
                 ? (next.isTime ? '30' : '12-15')
-                : getExerciseRepRange(next, answers.goal);
+                : getExerciseRepRange(next, answers.goal, answers.level);
             dayNames.add(next.name);
             usedNames.add(next.name);
             exercises.push({
@@ -2292,7 +2359,7 @@ function fitProgramToDuration(program, answers = {}) {
                     const coverageAccessory = needsCoverage && !isStableAnchorExercise(ex);
                     const plannedExercise = {
                         ...ex,
-                        target: `1x${getExerciseRepRange(ex, answers.goal)}`,
+                        target: `1x${getExerciseRepRange(ex, answers.goal, answers.level)}`,
                         rest: getExerciseRest(ex, answers),
                         ...(coverageAccessory ? { isCoverageAccessory: true } : {}),
                     };
@@ -2353,7 +2420,7 @@ function improveWeeklyCoverage(program, answers) {
                     const previous = day.exercises[position];
                     const sets = previous ? parseSetCount(previous.target) : 1;
                     const exercises = day.exercises.slice();
-                    exercises[position] = { ...ex, target: `${sets}x${getExerciseRepRange(ex, answers.goal)}`,
+                    exercises[position] = { ...ex, target: `${sets}x${getExerciseRepRange(ex, answers.goal, answers.level)}`,
                         rest: getExerciseRest(ex, answers), isCoverageAccessory: !isStableAnchorExercise(ex) };
                     const next = { ...day, exercises: arrange(day, exercises) };
                     const plan = planFor(next);
@@ -2424,7 +2491,7 @@ function applySwapChoice(program, answers, dayIndex, exIndex, chosen) {
     return program.map((d, di) => {
         if (di !== dayIndex)
             return d;
-        const newExercises = d.exercises.map((e, ei) => ei === exIndex ? { ...withId(chosen), category: current.category, target: `${parseSetCount(current.target)}x${getExerciseRepRange(chosen, answers.goal)}`, rest: current.rest, portion: chosen.portion || classifyPortion(current.category, chosen.subgroup || '', chosen.name || ''), manualSwap: true } : e);
+        const newExercises = d.exercises.map((e, ei) => ei === exIndex ? { ...withId(chosen), category: current.category, target: `${parseSetCount(current.target)}x${getExerciseRepRange(chosen, answers.goal, answers.level)}`, rest: current.rest, portion: chosen.portion || classifyPortion(current.category, chosen.subgroup || '', chosen.name || ''), manualSwap: true } : e);
         return { ...d, exercises: newExercises };
     });
 }
@@ -2441,7 +2508,7 @@ function swapExercise(program, answers, dayIndex, exIndex) {
             const newProgram = program.map((d, di) => {
                 if (di !== dayIndex)
                     return d;
-                const newExercises = d.exercises.map((e, ei) => ei === exIndex ? { ...withId(candidate), category: current.category, target: `${parseSetCount(current.target)}x${getExerciseRepRange(candidate, answers.goal)}`, rest: current.rest, portion: candidate.portion || classifyPortion(current.category, candidate.subgroup || '', candidate.name || ''), manualSwap: true } : e);
+                const newExercises = d.exercises.map((e, ei) => ei === exIndex ? { ...withId(candidate), category: current.category, target: `${parseSetCount(current.target)}x${getExerciseRepRange(candidate, answers.goal, answers.level)}`, rest: current.rest, portion: candidate.portion || classifyPortion(current.category, candidate.subgroup || '', candidate.name || ''), manualSwap: true } : e);
                 return { ...d, exercises: newExercises };
             });
             return newProgram;
@@ -3481,7 +3548,7 @@ function ProgramBuilder() {
                 if (result?.value) {
                     const parsed = JSON.parse(result.value);
                     if (parsed.program && parsed.answers) {
-                        setProgram(parsed.program);
+                        setProgram(applyProgramPrescription(parsed.program, parsed.answers));
                         setAnswers(parsed.answers);
                         setProgramStartDate(parsed.date || null);
                         setMode("home");
@@ -3575,7 +3642,8 @@ function ProgramBuilder() {
         setFreestyleExercises((prev) => {
             if (prev.some((e) => e.id === ex.id))
                 return prev;
-            return [...prev, { ...withId(ex), category: freestyleCategory, target: ex.isTime ? "3x30" : "3x8-12", rest: 90 }];
+            return [...prev, { ...withId(ex), category: freestyleCategory, target: `2x${getExerciseRepRange(ex, answers.goal, answers.level)}`,
+                rest: getExerciseRest(ex, answers) }];
         });
     }
     function removeFreestyleExercise(exId) {
@@ -4229,7 +4297,7 @@ function ProgramBuilder() {
             for (const [i, session] of Object.entries(bundle.sessions || {}))
                 if (session)
                     await writeJson(`custom-session:${i}`, session);
-            setProgram(bundle.customProgram.program);
+            setProgram(applyProgramPrescription(bundle.customProgram.program, bundle.customProgram.answers));
             setAnswers(bundle.customProgram.answers);
             setProgramStartDate(bundle.customProgram.date || null);
             setTrainingLog(bundle.trainingLog || []);
@@ -4442,7 +4510,7 @@ function ProgramBuilder() {
                 if (result?.value) {
                     const parsed = JSON.parse(result.value);
                     if (parsed.program && parsed.answers) {
-                        setProgram(parsed.program);
+                        setProgram(applyProgramPrescription(parsed.program, parsed.answers));
                         setAnswers(parsed.answers);
                         setProgramStartDate(parsed.date || null);
                         setMode("home");
@@ -6663,6 +6731,8 @@ function ProgramBuilder() {
                 const quality = analyzeProgram(program, answers);
                 const coverage = currentWeek === 1 ? quality.weeklyCoverage : getWeeklyPortionCoverage(program, answers, currentWeek, currentVolumePlan.adjustment);
                 const missing = coverage.rows.filter(row => row.available && row.sets === 0);
+                const frequency = getMajorMuscleFrequency(currentVolumePlan.days);
+                const underTwo = Object.entries(frequency).filter(([, count]) => count < 2);
                 const averageMinutes = Math.round(displayedProgram.reduce((total, day) =>
                     total + day.minutes, 0) / Math.max(1, displayedProgram.length));
                 const [minimum, maximum] = DURATION_TARGETS[answers.duration] || DURATION_TARGETS.court;
@@ -6677,6 +6747,9 @@ function ProgramBuilder() {
                         React.createElement("span", { className: "value" }, `${coverage.coveredCount}/${coverage.availableCount}`)),
                     shortDays > 0 && React.createElement("div", { className: "mc-v12-muted" },
                         `${shortDays}/${displayedProgram.length} séances sous la durée cible avec les séries et exercices retenus pour ton profil.`),
+                    currentWeek !== CYCLE_WEEKS && underTwo.length > 0 && React.createElement("details", { className: "item" },
+                        React.createElement("summary", { className: "label" }, "Groupes travaillés moins de deux fois"),
+                        React.createElement("div", { className: "mc-v12-muted" }, underTwo.map(([group, count]) => `${group} · ${count} séance${count > 1 ? "s" : ""}`).join(" / "))),
                     missing.length > 0 && React.createElement("details", { className: "item" },
                         React.createElement("summary", { className: "label" }, "Portions à couvrir"),
                         React.createElement("div", { className: "mc-v12-muted" }, missing.map(row => row.portion).join(" · "))));
@@ -6720,11 +6793,9 @@ function ProgramBuilder() {
             React.createElement("div", { className: "rounded-lg p-3", style: { background: colors.surface, border: `1px solid ${colors.border}`, borderLeft: `3px solid ${colors.accent}` } },
                 React.createElement("div", { style: { fontFamily: displayFont, fontWeight: 700, fontSize: 14 }, className: "mb-1" }, "\uD83E\uDDE0 La logique de progression"),
                 React.createElement("div", { style: { color: colors.muted, fontSize: 11, lineHeight: 1.5 } },
-                    "Fourchette fixe ",
-                    React.createElement("strong", { style: { color: colors.text } },
-                        GOAL_SCHEMES[answers.goal]?.reps,
-                        " reps"),
-                    ". Haut de fourchette \u2192 + poids et retour au bas. Sinon \u2192 m\u00EAme poids, +1 rep. \u00C9chec \u2192 consolidation. Le volume suit le cycle de 8 semaines.")),
+                    "Le coach vise deux séances par semaine pour chaque grand groupe et au moins deux séries par exercice en semaine normale. Les plages de répétitions dépendent du mouvement et de ton objectif.",
+                    " ",
+                    React.createElement("a", { href: "https://acsm.org/resistance-training-guidelines-update-2026/", target: "_blank", rel: "noopener noreferrer", style: { color: colors.accent } }, "Repères ACSM 2026"))),
             displayedProgram.map((day, di) => (React.createElement("div", { key: di, style: { background: colors.surface, border: `1px solid ${colors.border}` }, className: "rounded-lg p-3" },
                 React.createElement("div", { style: { fontFamily: displayFont, fontWeight: 700, fontSize: 17 }, className: "mb-2" }, day.title),
                 React.createElement("div", { className: "mc-v12-muted mb-2" },
