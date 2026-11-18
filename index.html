@@ -1402,7 +1402,15 @@ function getCycleReferenceSeries(program, answers) {
 function getWeeklyDayPlans(program, answers, week, adjustment) {
     const scheduledProgram = getProgramForWeek(program, answers, week) || [];
     const plans = scheduledProgram.map(day => getDayVolumePlan(day, answers, week));
-    if (!plans.length || week === CYCLE_WEEKS) return plans;
+    if (!plans.length) return plans;
+    if (week === CYCLE_WEEKS) {
+        plans.forEach((plan, dayIndex) => {
+            plan.sets = plan.sets.map(sets => Math.min(sets, 2));
+            plan.supersets = getPlannedSupersets(scheduledProgram[dayIndex], plan.exercises, answers,
+                withPlannedSets(plan.exercises, plan.sets, answers));
+        });
+        return plans;
+    }
     const targets = getWeeklyVolumeTargets(answers);
     const multiplier = getPlannedVolumeMultiplier(answers, week);
     const { byGroup: volume, total: initialTotal } = summarizePlannedVolume(plans);
