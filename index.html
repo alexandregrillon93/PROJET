@@ -2379,8 +2379,9 @@ function fitProgramToDuration(program, answers = {}) {
         return { ...day, exercises };
     });
 }
-function improveWeeklyCoverage(program, answers) {
-    const arrange = (day, exercises) => hasManualSupersets(day, answers.training_style)
+function improveWeeklyCoverage(program, answers, options = {}) {
+    const { week = 1, preserveOrder = false, protectedIds = new Set(), frozenDays = new Set() } = options;
+    const arrange = (day, exercises) => preserveOrder || hasManualSupersets(day, answers.training_style)
         ? exercises
         : arrangeSupersetExercises(exercises, getAutomaticSupersetStyle(exercises, answers, true));
     const days = program.map(day => ({ ...day, exercises: arrange(day, day.exercises), manualSupersets: hasManualSupersets(day, answers.training_style) }));
@@ -2389,7 +2390,7 @@ function improveWeeklyCoverage(program, answers) {
     const limitations = (answers.limitations || []).filter(value => value !== "aucune");
     const keyOf = ({ category, portion }) => `${category}|${portion}`;
     const targetsOf = exercises => new Set(exercises.filter(ex => !ex.isRenforcement).flatMap(getStatMuscleTargets).map(keyOf));
-    const planFor = day => getDayVolumePlan(day, answers, 1);
+    const planFor = day => getDayVolumePlan(day, answers, week);
     const minutesFor = (day, plan) => estimateSessionMinutes({
         ...day, exercises: withPlannedSets(plan.exercises, plan.sets, answers),
     }, answers, plan.supersets);
@@ -2407,6 +2408,7 @@ function improveWeeklyCoverage(program, answers) {
         const useful = candidateTargets.filter(({ targets }) => [...targets].some(target => missing.has(target)));
         let best = null;
         days.forEach((day, index) => {
+            if (frozenDays.has(index)) return;
             const otherTargets = new Set(dailyTargets.flatMap((targets, i) => i === index ? [] : [...targets]));
             const names = new Set(day.exercises.map(ex => ex.name));
             const currentMajor = new Set(planFor(day).exercises.map(ex => ex.category).filter(group => MAJOR_TRAINING_GROUPS.includes(group)));
@@ -2415,7 +2417,10 @@ function improveWeeklyCoverage(program, answers) {
                 if (isAdvancedMovement(ex) && day.exercises.some(isAdvancedMovement)) return;
                 const replacementIndices = day.exercises.flatMap((current, i) =>
                     i > 0 && (current.category === ex.category || !MAJOR_TRAINING_GROUPS.includes(current.category)) &&
-                        !current.manualSwap && !current.isRenforcement && !isStableAnchorExercise(current) &&
+                        !protectedIds.has(current.id) && !current.manualSwap && !current.isRenforcement &&
+                        (!isStableAnchorExercise(current) || (preserveOrder && current.category === ex.category &&
+                            isStableAnchorExercise(ex) && day.exercises.some(other => other !== current &&
+                                other.category === current.category && isStableAnchorExercise(other)))) &&
                         !(day.manualSupersets && getGroupForIndex(day.supersets, i)) ? [i] : []);
                 if (day.exercises.length < maxExercises) replacementIndices.push(day.exercises.length);
                 replacementIndices.forEach(position => {
@@ -2445,6 +2450,49 @@ function improveWeeklyCoverage(program, answers) {
         dailyTargets[best.index] = best.nextTargets;
     }
     return days;
+}
+const COVERAGE_REVISION = 1;
+async function restoreProgramWithCoverage(snapshot) {
+    const { program, answers, date } = snapshot;
+    const baseline = applyProgramPrescription(program, answers);
+    const week = Math.min(CYCLE_WEEKS, weekNumber(date));
+    if (snapshot.coverageRevision === COVERAGE_REVISION || week === CYCLE_WEEKS) return baseline;
+    try {
+        const keys = ["training-log", "stats-session-log", "session-store", ...program.map((_, index) => `custom-session:${index}`)];
+        const [training, stats, store, ...days] = await Promise.all(keys.map(async key => {
+            const result = await window.storage.get(key, false);
+            return result?.value ? JSON.parse(result.value) : null;
+        }));
+        const protectedIds = new Set();
+        const frozenDays = new Set();
+        const protect = (session) => {
+            if (!session || (date && +new Date(session.date) < +new Date(date))) return;
+            Object.entries(session.exercises || {}).forEach(([id, sets]) => {
+                if (Array.isArray(sets) && sets.some(set => set && (set.done || Number(set.reps) > 0))) protectedIds.add(id);
+            });
+        };
+        [training, stats, store].forEach(log => (log || []).forEach(entry => {
+            if (entry?.status !== "completed" || String(entry.dayIndex) === "freestyle") return;
+            if (entry.session) protect(entry.session);
+            else if ((!date || localDateKey(date) <= entry.date) && /^[0-9]+$/.test(String(entry.dayIndex))) frozenDays.add(Number(entry.dayIndex));
+        }));
+        days.forEach((day, index) => {
+            (day?.history || []).forEach(protect);
+            protect(day?.previous);
+            const draft = day?.current;
+            if (draft?.timerStartedAt || Object.values(draft?.exercises || {}).some(sets =>
+                Array.isArray(sets) && sets.some(set => set && (set.done || set.weight || set.reps)))) frozenDays.add(index);
+        });
+        const candidate = applyProgramPrescription(improveWeeklyCoverage(baseline, answers, {
+            week, preserveOrder: true, protectedIds, frozenDays,
+        }), answers);
+        const oldCoverage = getWeeklyPortionCoverage(baseline, answers, week);
+        const nextCoverage = getWeeklyPortionCoverage(candidate, answers, week);
+        const preservesCoverage = oldCoverage.rows.every((row, index) => !row.sets || nextCoverage.rows[index].sets > 0);
+        return preservesCoverage && nextCoverage.coveredCount > oldCoverage.coveredCount ? candidate : baseline;
+    } catch (_) {
+        return baseline;
+    }
 }
 function getGroupForIndex(supersets, idx) {
     return (supersets || []).find((g) => g.includes(idx)) || null;
@@ -3557,7 +3605,7 @@ function ProgramBuilder() {
                 if (result?.value) {
                     const parsed = JSON.parse(result.value);
                     if (parsed.program && parsed.answers) {
-                        setProgram(applyProgramPrescription(parsed.program, parsed.answers));
+                        setProgram(await restoreProgramWithCoverage(parsed));
                         setAnswers(parsed.answers);
                         setProgramStartDate(parsed.date || null);
                         setMode("home");
@@ -4306,7 +4354,7 @@ function ProgramBuilder() {
             for (const [i, session] of Object.entries(bundle.sessions || {}))
                 if (session)
                     await writeJson(`custom-session:${i}`, session);
-            setProgram(applyProgramPrescription(bundle.customProgram.program, bundle.customProgram.answers));
+            setProgram(await restoreProgramWithCoverage(bundle.customProgram));
             setAnswers(bundle.customProgram.answers);
             setProgramStartDate(bundle.customProgram.date || null);
             setTrainingLog(bundle.trainingLog || []);
@@ -4410,7 +4458,8 @@ function ProgramBuilder() {
             if (!window.storage)
                 return;
             let startDate = startDateOverride || programStartDate || new Date().toISOString();
-            const snapshot = { answers: answersToSave, program: prog, date: startDate, cycleWeeks: CYCLE_WEEKS, lastUpdated: new Date().toISOString() };
+            const snapshot = { answers: answersToSave, program: prog, date: startDate, cycleWeeks: CYCLE_WEEKS,
+                coverageRevision: COVERAGE_REVISION, lastUpdated: new Date().toISOString() };
             const serialized = JSON.stringify(snapshot);
             await window.storage.set("custom-program", serialized, false);
             try { window.localStorage.setItem("wt_custom-program-backup", serialized); } catch (_) {}
@@ -4519,7 +4568,7 @@ function ProgramBuilder() {
                 if (result?.value) {
                     const parsed = JSON.parse(result.value);
                     if (parsed.program && parsed.answers) {
-                        setProgram(applyProgramPrescription(parsed.program, parsed.answers));
+                        setProgram(await restoreProgramWithCoverage(parsed));
                         setAnswers(parsed.answers);
                         setProgramStartDate(parsed.date || null);
                         setMode("home");
@@ -4655,7 +4704,8 @@ function ProgramBuilder() {
             // After restart(), programStartDate is null, so this is guaranteed to
             // create a fresh week 1 instead of inheriting the previous cycle date.
             const startDate = programStartDate || new Date().toISOString();
-            const snapshot = { answers, program, date: startDate, cycleWeeks: CYCLE_WEEKS, lastUpdated: new Date().toISOString() };
+            const snapshot = { answers, program, date: startDate, cycleWeeks: CYCLE_WEEKS,
+                coverageRevision: COVERAGE_REVISION, lastUpdated: new Date().toISOString() };
             const serialized = JSON.stringify(snapshot);
             await window.storage.set("custom-program", serialized, false);
             try { window.localStorage.setItem("wt_custom-program-backup", serialized); } catch (_) {}
