@@ -1375,26 +1375,27 @@ function getDayPlanForWeek(program, dayIndex, answers, week, adjustment) {
 function getWeeklyDayPlans(program, answers, week, adjustment) {
     const plans = (program || []).map((_, index) => getDayPlanForWeek(program, index, answers, week, adjustment));
     if (week === CYCLE_WEEKS || answers.recovery === "faible") return plans;
-    const lowerGroups = ["Jambes", "Ischios/Fessiers", "Mollets"];
     const targets = getWeeklyVolumeTargets(answers);
     const multiplier = getVolumeMultiplier(answers.goal, week);
-    const counts = Object.fromEntries(lowerGroups.map(group => [group, 0]));
+    const counts = Object.fromEntries(Object.keys(targets).map(group => [group, 0]));
+    const priorities = new Set(answers.priority || []);
     plans.forEach(plan => plan.exercises.forEach((ex, index) => {
-        if (!ex.isRenforcement && lowerGroups.includes(ex.category)) counts[ex.category] += plan.sets[index];
+        if (!ex.isRenforcement && Object.hasOwn(counts, ex.category)) counts[ex.category] += plan.sets[index];
     }));
-    const budgets = Object.fromEntries(lowerGroups.map(group => [group, Math.round(targets[group] * multiplier)]));
+    const budgets = Object.fromEntries(Object.entries(targets).map(([group, sets]) => [group, Math.round(sets * multiplier)]));
     const [minMinutes, maxMinutes] = DURATION_TARGETS[answers.duration] || DURATION_TARGETS.court;
     plans.forEach((plan, dayIndex) => {
         const estimate = () => estimateSessionMinutes({
             ...program[dayIndex], exercises: withPlannedSets(plan.exercises, plan.sets, answers),
         }, answers, plan.supersets);
         const candidates = plan.exercises.flatMap((ex, index) =>
-            !ex.isRenforcement && lowerGroups.includes(ex.category) &&
+            !ex.isRenforcement && Object.hasOwn(budgets, ex.category) &&
             !(adjustment?.delta < 0 && adjustment.category === ex.category) ? [{ ex, index }] : []);
         while (estimate() < minMinutes) {
             const next = candidates.filter(({ ex, index }) =>
                 counts[ex.category] < budgets[ex.category] && plan.sets[index] < maxSetsPerExercise(ex, answers))
                 .sort((a, b) => counts[a.ex.category] / budgets[a.ex.category] - counts[b.ex.category] / budgets[b.ex.category] ||
+                    Number(priorities.has(b.ex.category)) - Number(priorities.has(a.ex.category)) ||
                     plan.sets[a.index] - plan.sets[b.index])[0];
             if (!next) break;
             plan.sets[next.index]++;
@@ -1404,7 +1405,9 @@ function getWeeklyDayPlans(program, answers, week, adjustment) {
                 continue;
             }
             counts[next.ex.category]++;
-            plan.lowerBodySetsAdded = (plan.lowerBodySetsAdded || 0) + 1;
+            plan.scheduledSetAdditions ||= {};
+            const group = next.ex.category;
+            plan.scheduledSetAdditions[group] = (plan.scheduledSetAdditions[group] || 0) + 1;
         }
     });
     return plans;
@@ -2145,9 +2148,9 @@ function fitProgramToDuration(program, answers = {}) {
     const groupOrder = ['Pectoraux','Dos','Épaules','Jambes','Ischios/Fessiers','Biceps','Triceps','Mollets','Core','Trapèzes','Avant-bras','Adducteurs/Abducteurs'];
     return (program || []).map((day) => {
         let exercises = (day.exercises || []).map((ex) => ({ ...ex }));
-        // Semaine 2 : le plan ne retire jamais d'exercice ici, sinon la boucle d'ajout ne convergerait pas.
-        const estimate = () => {
+        const estimate = (candidate) => {
             const plan = getDayVolumePlan({ ...day, exercises }, answers, 2);
+            if (candidate && !plan.exercises.includes(candidate)) return Infinity;
             return estimateSessionMinutes({ ...day, exercises: withPlannedSets(plan.exercises, plan.sets, answers) }, answers, plan.supersets);
         };
         if (answers.renforcement === 'oui') {
@@ -2195,7 +2198,7 @@ function fitProgramToDuration(program, answers = {}) {
                         ...(coverageAccessory ? { isCoverageAccessory: true } : {}),
                     };
                     exercises.push(plannedExercise);
-                    if (estimate() > target[1]) {
+                    if (estimate(plannedExercise) > target[1]) {
                         exercises.pop();
                         continue;
                     }
@@ -2603,85 +2606,6 @@ function getProgramAdherence(program, trainingLog) {
     if (!program?.length) return 0;
     const completedDays = weeklyProgramStatus(program, trainingLog || []).filter((day) => day.status === "done").length;
     return Math.round((completedDays / program.length) * 100);
-}
-function optimizeProgramSafety(program, answers) {
-    if (!program?.length)
-        return { program, changes: [], before: 0, after: 0 };
-    const goal = answers?.goal || "recomposition";
-    const targets = {
-        hypertrophie: { min: 10, max: 16 },
-        force: { min: 6, max: 12 },
-        perte_gras: { min: 8, max: 14 },
-        recomposition: { min: 8, max: 14 },
-    }[goal] || { min: 8, max: 14 };
-    const scoreOf = p => analyzeProgram(p, answers).score;
-    const before = scoreOf(program);
-    let best = program.map(d => ({ ...d, exercises: [...(d.exercises || []).map(e => ({ ...e }))] }));
-    let bestScore = before;
-    const changes = [];
-    // Greedy hill-climb: try one safe change at a time and keep it only when
-    // the real analyzer score improves. This makes the button actionable instead
-    // of changing text while leaving the program/score untouched.
-    const candidates = [];
-    best.forEach((day, di) => (day.exercises || []).forEach((ex, ei) => {
-        const n = parseSetCount(ex.target);
-        if (!Number.isFinite(n) || n < 1)
-            return;
-        const repPart = (String(ex.target || '').split('x')[1] || '8-12').trim();
-        if (n > 1)
-            candidates.push({ di, ei, delta: -1, label: '↓' });
-        if (n < 5)
-            candidates.push({ di, ei, delta: +1, label: '↑' });
-    }));
-    // ONE CLICK = ONE accepted modification maximum.
-    // The Coach must never chain several changes during a single click.
-    for (let step = 0; step < 1; step++) {
-        let bestMove = null;
-        let bestMoveScore = bestScore;
-        let bestMoveProgram = null;
-        for (const c of candidates) {
-            const ex = best[c.di]?.exercises?.[c.ei];
-            if (!ex)
-                continue;
-            const n = parseSetCount(ex.target);
-            const nextN = n + c.delta;
-            if (nextN < 1 || nextN > 5)
-                continue;
-            const repPart = (String(ex.target || '').split('x')[1] || '8-12').trim();
-            const trial = best.map(d => ({ ...d, exercises: [...(d.exercises || []).map(e => ({ ...e }))] }));
-            trial[c.di].exercises[c.ei] = { ...ex, target: `${nextN}x${repPart}` };
-            const sc = scoreOf(trial);
-            if (sc > bestMoveScore) {
-                bestMoveScore = sc;
-                bestMove = c;
-                bestMoveProgram = trial;
-            }
-        }
-        if (!bestMove || !bestMoveProgram)
-            break;
-        const oldEx = best[bestMove.di].exercises[bestMove.ei];
-        const oldN = parseSetCount(oldEx.target);
-        const newEx = bestMoveProgram[bestMove.di].exercises[bestMove.ei];
-        best = bestMoveProgram;
-        bestScore = bestMoveScore;
-        changes.push(`${bestMove.label} ${oldEx.name}: ${oldN} → ${parseSetCount(newEx.target)} séries`);
-        // Stop immediately: one click is intentionally limited to one change.
-        break;
-        // Rebuild candidates (kept below for compatibility with older logic).
-        candidates.length = 0;
-        best.forEach((day, di) => (day.exercises || []).forEach((ex, ei) => {
-            const n = parseSetCount(ex.target);
-            if (!Number.isFinite(n))
-                return;
-            if (n > 2)
-                candidates.push({ di, ei, delta: -1, label: '↓' });
-            if (n < 5)
-                candidates.push({ di, ei, delta: +1, label: '↑' });
-        }));
-    }
-    // If the score cannot be improved by series changes, do not pretend that it did.
-    // A 92/100 plan can legitimately stay at 92/100.
-    return { program: best, changes, before, after: bestScore };
 }
 function buildAppDiagnostic({ program, answers, nutritionProfile, dashboardData, advancedSettings, voiceNotes, programStartDate, todayRecovery }) {
     const checks = [];
@@ -3205,7 +3129,6 @@ function ProgramBuilder() {
     const [stepIndex, setStepIndex] = useState(0);
     const [answers, setAnswers] = useState({ days: 4 });
     const [program, setProgram] = useState(null);
-    const [coachUsedForCurrentProgram, setCoachUsedForCurrentProgram] = useState(false);
     const [savedFlash, setSavedFlash] = useState(false);
     const [mode, setMode] = useState("init"); // init | quiz | result | track | home
     const [showMoreMenu, setShowMoreMenu] = useState(false);
@@ -3255,7 +3178,6 @@ function ProgramBuilder() {
     const [exerciseFilter, setExerciseFilter] = useState("Tous");
     const [showDiagnostics, setShowDiagnostics] = useState(false);
     const [diagnosticResult, setDiagnosticResult] = useState(null);
-    const [optimizationReport, setOptimizationReport] = useState(null);
     useEffect(() => {
         (async () => {
             try {
@@ -3358,43 +3280,6 @@ function ProgramBuilder() {
         } catch (e) {
             setImportFlash("Impossible d'effacer les statistiques.");
             setTimeout(() => setImportFlash(null), 3000);
-        }
-    }
-    async function optimizeCurrentProgram() {
-        if (!program)
-            return;
-        if (coachUsedForCurrentProgram) {
-            setImportFlash('✓ Coach déjà utilisé pour ce programme. Modifie ou régénère le programme pour une nouvelle optimisation.');
-            setTimeout(() => setImportFlash(null), 4500);
-            return;
-        }
-        setCoachUsedForCurrentProgram(true);
-        try {
-            const beforeAnalysis = analyzeProgram(program, answers);
-            const coverageProgram = improveWeeklyCoverage(program, answers);
-            const coverageAnalysis = analyzeProgram(coverageProgram, answers);
-            const beforeCoverage = beforeAnalysis.weeklyCoverage.coveredCount;
-            const afterCoverage = coverageAnalysis.weeklyCoverage.coveredCount;
-            const result = afterCoverage > beforeCoverage
-                ? { program: coverageProgram, before: beforeAnalysis.score, after: coverageAnalysis.score,
-                    changes: [`Portions accessibles couvertes en semaine 1 : ${beforeCoverage} → ${afterCoverage}`] }
-                : optimizeProgramSafety(program, answers);
-            const finalAnalysis = analyzeProgram(result.program || program, answers);
-            setOptimizationReport({ before: result.before ?? beforeAnalysis.score, after: result.after ?? finalAnalysis.score, changes: result.changes || [], issuesBefore: beforeAnalysis.issues || [], strengthsAfter: finalAnalysis.strengths || [], applied: !!(result.changes && result.changes.length) });
-            if (result.changes?.length) {
-                setProgram(result.program);
-                await persistProgramSnapshot(result.program);
-                setImportFlash(`Une seule optimisation appliquée · ${result.before}/100 → ${result.after}/100`);
-            }
-            else
-                setImportFlash(`✓ Analyse terminée · ${beforeAnalysis.score}/100 · aucune correction automatique utile.`);
-            setTimeout(() => setImportFlash(null), 6500);
-        }
-        catch (err) {
-            console.error('Optimisation:', err);
-            setOptimizationReport({ before: analyzeProgram(program, answers).score, after: analyzeProgram(program, answers).score, changes: [], issuesBefore: ['Erreur pendant l’optimisation : vérifie ton programme et réessaie.'], strengthsAfter: [], applied: false, error: true });
-            setImportFlash('L’optimisation a rencontré une erreur.');
-            setTimeout(() => setImportFlash(null), 5000);
         }
     }
     function runDiagnostics() {
@@ -3500,10 +3385,7 @@ function ProgramBuilder() {
                 if (result?.value) {
                     const parsed = JSON.parse(result.value);
                     if (parsed.program && parsed.answers) {
-                        const restoredProgram = ensureTrapeziusExercises(parsed.program, parsed.answers);
-                        const restoredSnapshot = { ...parsed, program: restoredProgram };
-                        await window.storage.set("custom-program", JSON.stringify(restoredSnapshot), false);
-                        setProgram(restoredProgram);
+                        setProgram(parsed.program);
                         setAnswers(parsed.answers);
                         setProgramStartDate(parsed.date || null);
                         setMode("home");
@@ -4376,7 +4258,6 @@ function ProgramBuilder() {
         setSwapPickerFor(null);
         setResultSwapPickerFor(null);
         setExerciseDetail(null);
-        setCoachUsedForCurrentProgram(false);
     }
     function toggleResultSwapPicker(di, ei) {
         const key = `${di}_${ei}`;
@@ -6740,19 +6621,6 @@ function ProgramBuilder() {
                                 x)),
                             !qa.issues.length && React.createElement("div", { style: { fontSize: 10, color: '#27D89B', marginTop: 4 } }, "\u2713 Rien de critique"))));
             })(),
-            React.createElement("div", { className: "mc-v12-card" },
-                React.createElement("div", { className: "mc-section-title" }, "Optimisation automatique"),
-                React.createElement("div", { className: "mc-v12-muted mt-1" }, "Le coach vérifie le volume et l’équilibre, puis applique au plus une correction utile."),
-                React.createElement("button", { onClick: optimizeCurrentProgram, disabled: coachUsedForCurrentProgram, className: "mc-v12-btn mt-3", style: { background: coachUsedForCurrentProgram ? colors.surfaceAlt : colors.accent, color: coachUsedForCurrentProgram ? colors.faint : "#06101A", fontWeight: 800, width: '100%' } },
-                    coachUsedForCurrentProgram ? "Optimisation déjà utilisée" : "Optimiser mon programme")),
-            optimizationReport && React.createElement("div", { className: "mc-v12-card" },
-                React.createElement("div", { className: "flex items-center justify-between" },
-                    React.createElement("div", { className: "mc-section-title" }, optimizationReport.error ? "Optimisation impossible" : optimizationReport.applied ? "Optimisation appliquée" : "Analyse terminée"),
-                    React.createElement("span", { className: "mc-v12-pill" }, `${optimizationReport.before}/100 → ${optimizationReport.after}/100`)),
-                optimizationReport.changes.length > 0
-                    ? optimizationReport.changes.slice(0, 8).map((change, index) => React.createElement("div", { key: index, className: "mc-v12-muted mt-2" }, `✓ ${change}`))
-                    : React.createElement("div", { className: "mc-v12-muted mt-2" }, optimizationReport.issuesBefore[0] || "Aucune correction automatique utile."),
-                React.createElement("button", { onClick: () => setOptimizationReport(null), className: "mc-v12-btn mt-3" }, "Fermer")),
             React.createElement("div", { className: "rounded-lg p-3", style: { background: colors.surface, border: `1px solid ${colors.border}`, borderLeft: `3px solid ${colors.accent}` } },
                 React.createElement("div", { style: { fontFamily: displayFont, fontWeight: 700, fontSize: 14 }, className: "mb-1" }, "\uD83E\uDDE0 La logique de progression"),
                 React.createElement("div", { style: { color: colors.muted, fontSize: 11, lineHeight: 1.5 } },
@@ -6871,8 +6739,9 @@ function ProgramBuilder() {
                             " séries prévues aujourd’hui")),
                     activePlan?.adjustment && React.createElement("div", { className: "mc-v12-muted mt-1" },
                         `${activePlan.adjustment.name} · ${activePlan.adjustment.delta > 0 ? "+1 série après trois performances stables" : "−1 série après deux séances à l’échec"}`),
-                    activePlan?.lowerBodySetsAdded > 0 && React.createElement("div", { className: "mc-v12-muted mt-1" },
-                        `Bas du corps · +${activePlan.lowerBodySetsAdded} série${activePlan.lowerBodySetsAdded > 1 ? "s" : ""} grâce au temps disponible`)),
+                    activePlan?.scheduledSetAdditions && React.createElement("div", { className: "mc-v12-muted mt-1" },
+                        Object.entries(activePlan.scheduledSetAdditions).map(([group, sets]) => `${group} +${sets}`).join(" · "),
+                        " · séries ajoutées selon le temps disponible")),
                 React.createElement("div", { className: "rounded p-2 mt-1", style: { background: recoveryModifier(todayRecovery).tone === 'warn' ? '#FFB06E12' : '#12B8FF12', border: `1px solid ${recoveryModifier(todayRecovery).tone === 'warn' ? '#FFB06E55' : '#12B8FF55'}` } },
                     React.createElement("div", { className: "flex items-center justify-between" },
                         React.createElement("span", { style: { fontFamily: displayFont, fontSize: 10, color: colors.muted } }, "ADAPTATION DU JOUR"),
